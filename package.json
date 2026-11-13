@@ -1,0 +1,21 @@
+{
+  "name": "piccione-spia-rovolon",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gioco 3D nel browser: un piccione spia nel comune di Rovolon ricostruito da dati OpenStreetMap 1:1",
+  "scripts": {
+    "fetch": "NODE_USE_ENV_PROXY=1 node scripts/fetch-osm.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-dem.mjs",
+    "build-data": "node scripts/build-data.mjs",
+    "vendor": "node scripts/vendor.mjs",
+    "serve": "python3 -m http.server 8080",
+    "test": "node tests/e2e.mjs"
+  },
+  "devDependencies": {
+    "earcut": "3.0.1",
+    "fast-xml-parser": "4.5.0",
+    "leaflet": "1.9.4",
+    "pngjs": "7.0.0",
+    "three": "0.170.0"
+  }
+}

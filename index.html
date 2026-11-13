@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#1b1f2a">
+  <title>Piccione Spia – Operazione Rovolon</title>
+  <meta name="description" content="Gioco 3D nel browser: sei un piccione-robot spia degli Illuminati nel comune di Rovolon (Carbonara, Bastia, i Colli Euganei), ricostruito 1:1 con dati OpenStreetMap.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='40' rx='20' ry='14' fill='%238a93a8'/%3E%3Ccircle cx='44' cy='24' r='10' fill='%23a3abbd'/%3E%3Crect x='30' y='8' width='26' height='4' fill='%23222'/%3E%3Crect x='35' y='0' width='16' height='10' fill='%23222'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="js/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "./js/vendor/three.module.min.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="game" tabindex="0"></canvas>
+
+  <!-- ===== Schermata iniziale ===== -->
+  <div id="start" class="screen">
+    <div class="start-card">
+      <div class="logo">
+        <svg viewBox="0 0 120 90" aria-hidden="true">
+          <ellipse cx="55" cy="60" rx="34" ry="22" fill="#8a93a8"/>
+          <path d="M22 58 L4 70 L26 68 Z" fill="#6f788d"/>
+          <circle cx="82" cy="40" r="15" fill="#a3abbd"/>
+          <path d="M70 52 Q82 60 92 50" stroke="#6c4fa3" stroke-width="5" fill="none"/>
+          <path d="M96 40 L108 44 L96 46 Z" fill="#e9b04b"/>
+          <circle cx="87" cy="37" r="3" fill="#ff3b3b"/>
+          <rect x="62" y="22" width="40" height="5" rx="2" fill="#1d1d22"/>
+          <rect x="70" y="8" width="24" height="16" rx="3" fill="#1d1d22"/>
+          <rect x="70" y="19" width="24" height="3" fill="#8b1e2d"/>
+          <path d="M72 60 Q50 30 30 50" fill="#7a8398"/>
+        </svg>
+      </div>
+      <h1>PICCIONE SPIA</h1>
+      <p class="subtitle">Operazione <b>Occhio di Colombo</b> · Comune di Rovolon (PD)</p>
+      <p class="lore">Sei l'agente <b>P-77</b>, piccione-robot al servizio degli Illuminati. Carbonara, Rovolon, Bastia e i Colli Euganei, in scala reale 1:1: ascolta, fotografa, ruba batterie… e lascia il segno.</p>
+      <div id="loading">
+        <div class="bar"><div id="loadbar"></div></div>
+        <div id="loadtext">Caricamento dati OpenStreetMap…</div>
+      </div>
+      <div id="startButtons" class="hidden">
+        <button id="btnContinue" class="primary hidden">▶ Continua la partita</button>
+        <button id="btnNew" class="primary">▶ Nuova partita</button>
+        <div class="row">
+          <label>Qualità
+            <select id="quality">
+              <option value="low">Bassa (telefoni)</option>
+              <option value="medium">Media</option>
+              <option value="high">Alta</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="optAudio" checked> Audio</label>
+        </div>
+      </div>
+      <details class="controls">
+        <summary>Comandi</summary>
+        <table>
+          <tr><td>W A S D / frecce</td><td>Cammina / dirigi il volo</td></tr>
+          <tr><td>Mouse (clic per agganciare)</td><td>Ruota la visuale</td></tr>
+          <tr><td>Spazio</td><td>Decolla / sali (tieni premuto)</td></tr>
+          <tr><td>C o Ctrl</td><td>Scendi in picchiata</td></tr>
+          <tr><td>Shift</td><td>Turbo (consuma più batteria)</td></tr>
+          <tr><td>F</td><td>Fai i bisogni 💩</td></tr>
+          <tr><td>E</td><td>Ruba batteria / interagisci</td></tr>
+          <tr><td>Q</td><td>Fotocamera spia (clic o Invio per scattare)</td></tr>
+          <tr><td>V</td><td>Tuba</td></tr>
+          <tr><td>M</td><td>Mappa del comune</td></tr>
+          <tr><td>T (tieni premuto)</td><td>Accelera il tempo</td></tr>
+          <tr><td>Esc / P</td><td>Pausa</td></tr>
+        </table>
+      </details>
+      <p class="credits">Mappa: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL) · Altimetria: Terrarium / AWS Open Data · Gli abitanti e i dialoghi sono inventati.</p>
+    </div>
+  </div>
+
+  <!-- ===== HUD ===== -->
+  <div id="hud" class="hidden">
+    <div id="hudTopLeft">
+      <div class="meter" id="batteryMeter" title="Batteria">
+        <span class="icon">🔋</span><div class="track"><div class="fill" id="batteryFill"></div></div><span id="batteryText">100%</span>
+      </div>
+      <div class="meter" id="coverMeter" title="Sospetto: se si riempie salta la copertura">
+        <span class="icon">👁</span><div class="track"><div class="fill" id="coverFill"></div></div><span id="coverText">0%</span>
+      </div>
+      <div id="clock">08:00 · Giorno 1</div>
+      <div id="location">Carbonara</div>
+      <div id="altitude"></div>
+    </div>
+    <div id="mission">
+      <div id="missionTitle"></div>
+      <div id="missionStep"></div>
+      <div id="missionProgress"></div>
+    </div>
+    <div id="minimapWrap" title="Apri la mappa (M)">
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div id="minimapStreet"></div>
+    </div>
+    <div id="prompt" class="hidden"></div>
+    <div id="subtitles"></div>
+    <div id="toasts"></div>
+    <div id="photoOverlay" class="hidden">
+      <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+      <div class="cross"></div>
+      <div id="photoInfo">FOTOCAMERA SPIA · rotella = zoom · clic/Invio = scatta · Q = esci</div>
+      <div id="photoTarget"></div>
+    </div>
+    <div id="flash"></div>
+    <button id="btnPause" class="hudbtn" title="Pausa">⏸</button>
+  </div>
+
+  <!-- ===== Comandi touch ===== -->
+  <div id="touch" class="hidden">
+    <div id="joy"><div id="joyKnob"></div></div>
+    <div id="touchButtons">
+      <button data-k="fly" class="tb big">🕊<small>Vola</small></button>
+      <button data-k="down" class="tb">⬇<small>Giù</small></button>
+      <button data-k="boost" class="tb">⚡<small>Turbo</small></button>
+      <button data-k="poop" class="tb">💩<small>Cacca</small></button>
+      <button data-k="steal" class="tb">✋<small>Ruba</small></button>
+      <button data-k="photo" class="tb">📷<small>Foto</small></button>
+      <button data-k="map" class="tb">🗺<small>Mappa</small></button>
+    </div>
+  </div>
+
+  <!-- ===== Mappa grande ===== -->
+  <div id="mapScreen" class="screen hidden">
+    <div id="mapHeader">
+      <b>Mappa del comune di Rovolon</b>
+      <span id="mapCoords"></span>
+      <label><input type="checkbox" id="mapNumbers" checked> Civici</label>
+      <label><input type="checkbox" id="mapPeople"> Abitanti</label>
+      <button id="mapCenter">📍 Piccione</button>
+      <button id="mapClose">✕ Chiudi (M)</button>
+    </div>
+    <div id="leaflet"></div>
+    <div id="mapLegend">Civici in <i>corsivo</i> = stimati (non presenti in OpenStreetMap)</div>
+  </div>
+
+  <!-- ===== Pausa ===== -->
+  <div id="pause" class="screen hidden">
+    <div class="start-card">
+      <h2>Pausa</h2>
+      <div id="stats"></div>
+      <button id="btnResume" class="primary">▶ Riprendi</button>
+      <button id="btnGallery">📷 Foto scattate</button>
+      <button id="btnMissionList">📜 Missioni</button>
+      <div class="row">
+        <label>Qualità
+          <select id="quality2">
+            <option value="low">Bassa</option>
+            <option value="medium">Media</option>
+            <option value="high">Alta</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="optAudio2" checked> Audio</label>
+      </div>
+      <button id="btnReset" class="danger">Cancella salvataggio</button>
+      <div id="gallery" class="hidden"></div>
+      <div id="missionList" class="hidden"></div>
+    </div>
+  </div>
+
+  <!-- ===== Briefing missione ===== -->
+  <div id="briefing" class="screen hidden">
+    <div class="start-card brief">
+      <div class="tag">MESSAGGIO CIFRATO · ILLUMINATI</div>
+      <h2 id="briefTitle"></h2>
+      <p id="briefText"></p>
+      <button id="briefOk" class="primary">Ricevuto, Gran Maestro</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
