@@ -9,7 +9,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const [S, W, N, E] = process.argv.length >= 6
   ? process.argv.slice(2, 6).map(Number)
-  : [45.335, 11.595, 45.405, 11.705];
+  : [45.335, 11.595, 45.425, 11.715];
 const STEP = 0.01;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

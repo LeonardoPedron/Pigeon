@@ -128,6 +128,26 @@ const KIND_MAP = {
   school: 'school', kindergarten: 'school', public: 'public', civic: 'public', government: 'public', townhall: 'public',
   garage: 'garage', garages: 'garage', shed: 'shed', carport: 'shed', hut: 'shed', roof: 'roof', service: 'shed', ruins: 'ruins', castle: 'castle',
 };
+// altezza e forma del tetto stimate dal tipo (OSM quasi mai le contiene)
+const KIND_LEVELS = { house: 2, villa: 2, apartments: 3, farm: 2, barn: 1.6, greenhouse: 1, church: 4, chapel: 2, tower: 8, industrial: 2.4, commercial: 2, school: 2, public: 2, garage: 1, shed: 1, roof: 1, ruins: 1, castle: 3 };
+function shapeFor(kind, a, t, id) {
+  let levels = parseFloat(t['building:levels']);
+  let h = parseFloat(t.height);
+  if (!levels) levels = KIND_LEVELS[kind] || 2;
+  if (kind === 'house' && a > 300 && !t['building:levels']) levels = 3;
+  if (!h) h = levels * 3 + (kind === 'tower' ? 4 : 0.4);
+  if (kind === 'shed' || kind === 'garage') h = Math.min(h, 3);
+  if (kind === 'roof') h = Math.min(h, 4);
+  if (kind === 'tower' && h < 18) h = Math.max(h, 22);
+  let roof = t['roof:shape'];
+  if (!roof || !['flat', 'gabled', 'hipped', 'pyramidal'].includes(roof)) {
+    if (['industrial', 'commercial', 'greenhouse', 'roof', 'ruins'].includes(kind) && a > 300) roof = 'flat';
+    else if (kind === 'tower') roof = 'pyramidal';
+    else if (kind === 'church' || kind === 'chapel' || kind === 'barn' || kind === 'garage' || kind === 'shed') roof = 'gabled';
+    else roof = a > 900 ? 'flat' : (id % 3 === 0 ? 'gabled' : 'hipped');
+  }
+  return { h, roof };
+}
 const buildings = [];
 function addBuilding(t, outer, holes, id) {
   const pts = ringXZ(outer);
@@ -143,28 +163,16 @@ function addBuilding(t, outer, holes, id) {
   let kind = KIND_MAP[t.building] || (t['building'] === 'yes' ? 'yes' : 'yes');
   if (t.man_made === 'tower' || t.tower) kind = 'tower';
   if (t.amenity === 'place_of_worship' && kind === 'yes') kind = a > 150 ? 'church' : 'chapel';
+  const generic = kind === 'yes';
   if (kind === 'yes') {
     if (t.shop || t.amenity) kind = 'commercial';
     else if (a < 25) kind = 'shed';
     else if (a > 1500) kind = 'industrial';
     else kind = 'house';
   }
-  let levels = parseFloat(t['building:levels']);
-  let h = parseFloat(t.height);
-  const defaults = { house: 2, villa: 2, apartments: 3, farm: 2, barn: 1.6, greenhouse: 1, church: 4, chapel: 2, tower: 8, industrial: 2.4, commercial: 2, school: 2, public: 2, garage: 1, shed: 1, roof: 1, ruins: 1, castle: 3 };
-  if (!levels) levels = defaults[kind] || 2;
-  if (kind === 'house' && a > 300 && !t['building:levels']) levels = 3;
-  if (!h) h = levels * 3 + (kind === 'tower' ? 4 : 0.4);
-  if (kind === 'shed' || kind === 'garage') h = Math.min(h, 3);
-  if (kind === 'tower' && h < 18) h = Math.max(h, 22);
-  let roof = t['roof:shape'];
-  if (!roof || !['flat', 'gabled', 'hipped', 'pyramidal'].includes(roof)) {
-    if (['industrial', 'commercial', 'greenhouse', 'roof', 'ruins'].includes(kind) && a > 300) roof = 'flat';
-    else if (kind === 'tower') roof = 'pyramidal';
-    else if (kind === 'church' || kind === 'chapel' || kind === 'barn' || kind === 'garage' || kind === 'shed') roof = 'gabled';
-    else roof = a > 900 ? 'flat' : (id % 3 === 0 ? 'gabled' : 'hipped');
-  }
+  const { h, roof } = shapeFor(kind, a, t, id);
   const b = { p: pts, h: r1(h), k: kind, r: roof[0] };
+  if (generic) b._gen = { t, a, id };
   if (holes && holes.length) b.hl = holes.map(ringXZ).filter((x) => x.length >= 6);
   if (t.name) b.n = t.name;
   if (t['addr:housenumber']) b.a = [t['addr:street'] || '', t['addr:housenumber']];
@@ -186,6 +194,144 @@ for (const r of rels.values()) {
   const outers = assembleRings(r.member.filter((m) => m.type === 'way' && m.role === 'outer').map((m) => ways.get(m.ref)).filter(Boolean));
   const inners = assembleRings(r.member.filter((m) => m.type === 'way' && m.role === 'inner').map((m) => ways.get(m.ref)).filter(Boolean));
   for (const o of outers) addBuilding(t, o, inners, +r.id);
+}
+console.log('buildings (OSM)', buildings.length);
+
+// ---------------------------------------------------------------- edifici Regione Veneto (DBT/CTRN 1:5000)
+// Servono a due cose: (1) dare una tipologia agli edifici OSM generici (building=yes),
+// (2) aggiungere gli edifici che mancano in OSM. Codici tipologia/uso del catalogo DBT
+// (interpretati dalle dimensioni medie nell'area): ty 13 = baracche/annessi, 05 = tettoie,
+// 03 = torri/campanili; uso 01 = residenziale, 0102 = box/accessori, 05 = culto,
+// 08 = produttivo, 09 = rurale, 03xx/02 = servizi pubblici, 07 = commerciale.
+const ringFromLonLat = (ring) => ring.map(([lo, la]) => [la, lo]);
+function centerOf(flat) {
+  // baricentro areale (più robusto della media dei vertici)
+  let A = 0, cx = 0, cz = 0;
+  for (let i = 0, n = flat.length; i < n; i += 2) {
+    const j = (i + 2) % n;
+    const f = flat[i] * flat[j + 1] - flat[j] * flat[i + 1];
+    A += f; cx += (flat[i] + flat[j]) * f; cz += (flat[i + 1] + flat[j + 1]) * f;
+  }
+  if (Math.abs(A) < 1e-6) return centroid(flat);
+  return [cx / (3 * A), cz / (3 * A)];
+}
+const BCELL = 40;
+const bGrid = new Map();
+function gridAdd(grid, cell, x0, z0, x1, z1, v) {
+  for (let gx = Math.floor(x0 / cell); gx <= Math.floor(x1 / cell); gx++)
+    for (let gz = Math.floor(z0 / cell); gz <= Math.floor(z1 / cell); gz++) {
+      const k = gx + ',' + gz;
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(v);
+    }
+}
+function bboxOf(flat) {
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (let i = 0; i < flat.length; i += 2) {
+    x0 = Math.min(x0, flat[i]); x1 = Math.max(x1, flat[i]);
+    z0 = Math.min(z0, flat[i + 1]); z1 = Math.max(z1, flat[i + 1]);
+  }
+  return [x0, z0, x1, z1];
+}
+function indexBuilding(b) {
+  b._bb = bboxOf(b.p);
+  gridAdd(bGrid, BCELL, ...b._bb, b);
+}
+function buildingsNear(x0, z0, x1, z1) {
+  const out = new Set();
+  for (let gx = Math.floor(x0 / BCELL); gx <= Math.floor(x1 / BCELL); gx++)
+    for (let gz = Math.floor(z0 / BCELL); gz <= Math.floor(z1 / BCELL); gz++)
+      for (const b of bGrid.get(gx + ',' + gz) || []) out.add(b);
+  return out;
+}
+// quota di vertici/baricentro di un poligono che cade nell'altro: stima veloce di sovrapposizione
+function overlaps(pa, pb) {
+  const [ax, az] = centerOf(pa), [bx, bz] = centerOf(pb);
+  if (pointInPoly(ax, az, pb) || pointInPoly(bx, bz, pa)) return true;
+  let k = 0, n = 0;
+  for (let i = 0; i < pa.length; i += 2, n++) if (pointInPoly(pa[i], pa[i + 1], pb)) k++;
+  for (let i = 0; i < pb.length; i += 2, n++) if (pointInPoly(pb[i], pb[i + 1], pa)) k++;
+  return k / n > 0.25;
+}
+function dbtKind(p, a) {
+  const ty = p.edi_ty, uso = p.edi_uso || '';
+  if (ty === '13') return a < 25 ? 'shed' : a > 200 ? 'barn' : 'shed';
+  if (ty === '05') return 'roof';
+  if (ty === '03') return 'tower';
+  if (uso === '0102') return a > 120 ? 'shed' : 'garage';
+  if (uso === '05') return a > 150 ? 'church' : 'chapel';
+  if (uso === '08') return a > 400 ? 'industrial' : 'barn';
+  if (uso === '09') return a > 250 ? 'barn' : 'farm';
+  if (uso === '07') return 'commercial';
+  if (uso.startsWith('03') || uso === '02') return a > 400 ? 'public' : 'public';
+  if (uso === '01') return a > 500 ? 'apartments' : a < 25 ? 'shed' : 'house';
+  return a < 25 ? 'shed' : a > 1500 ? 'industrial' : 'house';
+}
+const VEN = path.join(RAW, 'veneto');
+const STATS = { osmBuildings: buildings.length };
+for (const b of buildings) indexBuilding(b);
+if (fs.existsSync(path.join(VEN, 'edifici.json'))) {
+  const feats = JSON.parse(fs.readFileSync(path.join(VEN, 'edifici.json'), 'utf8')).features;
+  let reclass = 0, added = 0, nid = 1;
+  // scostamento sistematico DBT -> OSM (riproiezione Gauss-Boaga): media sulle coppie di edifici vicine
+  let sdx = 0, sdz = 0, sk = 0;
+  for (const f of feats) {
+    if (f.geometry?.type !== 'MultiPolygon') continue;
+    const pts = ringXZ(ringFromLonLat(f.geometry.coordinates[0][0]));
+    const [cx, cz] = centroid(pts);
+    let bd = 4, best = null;
+    for (const o of buildingsNear(cx - 4, cz - 4, cx + 4, cz + 4)) {
+      const [ox, oz] = centroid(o.p);
+      const d = Math.hypot(ox - cx, oz - cz);
+      if (d < bd) { bd = d; best = [ox - cx, oz - cz]; }
+    }
+    if (best) { sdx += best[0]; sdz += best[1]; sk++; }
+  }
+  const offX = sk > 50 ? sdx / sk : 0, offZ = sk > 50 ? sdz / sk : 0;
+  STATS.dbtOffset = [r1(offX), r1(offZ)];
+  console.log('DBT: scostamento medio rispetto a OSM', offX.toFixed(2), offZ.toFixed(2), 'm su', sk, 'coppie');
+  for (const f of feats) {
+    const g = f.geometry;
+    if (!g) continue;
+    const polys = g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates];
+    for (const poly of polys) {
+      const pts = ringXZ(ringFromLonLat(poly[0]));
+      for (let i = 0; i < pts.length; i += 2) { pts[i] = r1(pts[i] + offX); pts[i + 1] = r1(pts[i + 1] + offZ); }
+      if (pts.length < 6 || !anyIn(pts)) continue;
+      let a = area(pts);
+      if (a < 0) {
+        const rev = [];
+        for (let i = pts.length - 2; i >= 0; i -= 2) rev.push(pts[i], pts[i + 1]);
+        pts.splice(0, pts.length, ...rev);
+        a = -a;
+      }
+      if (a < 6) continue;
+      const kind = dbtKind(f.properties, a);
+      const bb = bboxOf(pts);
+      const hits = [...buildingsNear(...bb)].filter((o) => !o._v && o._bb[0] < bb[2] && o._bb[2] > bb[0] && o._bb[1] < bb[3] && o._bb[3] > bb[1] && overlaps(o.p, pts));
+      if (hits.length) {
+        for (const o of hits) {
+          if (!o._gen || o._dbt) continue;
+          o._dbt = 1;
+          if (o.k === kind) continue;
+          // tipologia regionale per gli edifici OSM generici
+          const { h, roof } = shapeFor(kind, o._gen.a, o._gen.t, o._gen.id);
+          o.k = kind; o.h = r1(h); o.r = roof[0];
+          reclass++;
+        }
+        continue;
+      }
+      // edificio presente solo nel DBT regionale
+      const { h, roof } = shapeFor(kind, a, {}, nid++);
+      const b = { p: pts, h: r1(h), k: kind, r: roof[0], v: 1, _v: 1 };
+      buildings.push(b);
+      indexBuilding(b);
+      added++;
+    }
+  }
+  STATS.dbtReclassified = reclass;
+  STATS.dbtAdded = added;
+  console.log('DBT Veneto:', feats.length, 'edifici,', reclass, 'OSM riclassificati,', added, 'aggiunti');
 }
 console.log('buildings', buildings.length);
 
@@ -221,6 +367,79 @@ for (const w of ways.values()) {
   roads.push(rd);
 }
 console.log('roads', roads.length, 'road nodes', roadNodes.length / 2);
+
+// ---------------------------------------------------------------- nomi delle vie
+// Normalizzazione per confrontare nomi scritti in modo diverso (OSM "Via Ca' Bologna", ANNCSU "VIA CA' BOLOGNA")
+const ROMAN = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7, VIII: 8, IX: 9, X: 10, XI: 11, XII: 12, XIII: 13, XX: 20, XXIII: 23, XXIV: 24, XXV: 25 };
+const ORD = { PRIMO: 1, SECONDO: 2, TERZO: 3, QUARTO: 4, QUINTO: 5, SESTO: 6, SETTIMO: 7, OTTAVO: 8, NONO: 9, DECIMO: 10, VENTESIMO: 20, VENTITREESIMO: 23, VENTIQUATTRESIMO: 24, VENTICINQUESIMO: 25 };
+const normStreet = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+  .replace(/[.'’`\-,]/g, ' ').split(/\s+/).filter(Boolean)
+  .map((w) => ROMAN[w] ?? ORD[w] ?? w).filter((w) => !['DI', 'DEL', 'DELLA', 'DEI', 'DELLE', 'DEGLI', 'D', 'S', 'SAN', 'SANTA', 'SANTO'].includes(w)).join(' ');
+const LOWER = new Set(['di', 'del', 'della', 'dei', 'delle', 'degli', 'dello', 'da', 'dal', 'dalla', 'a', 'al', 'alla', 'alle', 'ai', 'agli', 'e', 'in', 'sul', 'sulla', 'per', 'con', 'tra', 'fra']);
+const ACC = { A: 'à', E: 'è', I: 'ì', O: 'ò', U: 'ù' };
+const titleCase = (s) => s.toLowerCase()
+  .replace(/([aeiou])'(?=\s|$)/g, (m, v, o, str) => (/(^|\s)ca'$/.test(str.slice(0, o + 2)) ? m : ACC[v.toUpperCase()])) // FUA' -> fuà, ma CA' resta
+  .split(/(\s+|'|\()/).map((w, i) => (i > 0 && LOWER.has(w)) || !w.trim() || w === "'" || w === '(' ? w : w[0].toUpperCase() + w.slice(1)).join('')
+  .replace(/\b(Xx|Xxiii|Iv|Ii|Iii|Xxiv|Xxv|Sp|Sr|Ss)\b/g, (m) => m.toUpperCase())
+  .replace(/\((\w\w)\)/g, (m, p) => '(' + p.toUpperCase() + ')');
+const osmNameByKey = new Map();
+for (const r of roads) if (r.n) osmNameByKey.set(normStreet(r.n), r.n);
+
+// grafo stradale regionale: nomi ufficiali per le strade OSM senza nome
+const vSegs = [];
+const vGrid = new Map();
+const VCELL = 40;
+if (fs.existsSync(path.join(VEN, 'strade.json'))) {
+  for (const f of JSON.parse(fs.readFileSync(path.join(VEN, 'strade.json'), 'utf8')).features) {
+    const nm = f.properties.nome || f.properties.percorsoam;
+    if (!nm || !f.geometry || /^(SENZA|STRADA SENZA|N\.?D|-|ST\d)/i.test(nm)) continue;
+    const name = osmNameByKey.get(normStreet(nm)) || titleCase(nm);
+    const lines = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [f.geometry.coordinates];
+    for (const ln of lines) for (let k = 0; k + 1 < ln.length; k++) {
+      const ax = px(ln[k][0]), az = pz(ln[k][1]), bx = px(ln[k + 1][0]), bz = pz(ln[k + 1][1]);
+      const si = vSegs.push({ ax, az, bx, bz, name }) - 1;
+      gridAdd(vGrid, VCELL, Math.min(ax, bx), Math.min(az, bz), Math.max(ax, bx), Math.max(az, bz), si);
+    }
+  }
+}
+function nearestVSeg(x, z, maxD) {
+  let best = null, bd = maxD;
+  const gx = Math.floor(x / VCELL), gz = Math.floor(z / VCELL);
+  for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++)
+    for (const si of vGrid.get(gx + dx + ',' + (gz + dz)) || []) {
+      const s = vSegs[si];
+      const vx = s.bx - s.ax, vz = s.bz - s.az, L2 = vx * vx + vz * vz || 1;
+      const t = Math.max(0, Math.min(1, ((x - s.ax) * vx + (z - s.az) * vz) / L2));
+      const d = Math.hypot(x - s.ax - vx * t, z - s.az - vz * t);
+      if (d < bd) { bd = d; best = s; }
+    }
+  return best;
+}
+let named0 = 0;
+if (vSegs.length) {
+  for (const r of roads) {
+    if (r.n || !['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'living_street', 'service', 'track'].includes(r.t)) continue;
+    // la strada OSM prende il nome regionale se la maggior parte dei suoi punti è vicina alla stessa via
+    const votes = new Map();
+    let n = 0;
+    for (let k = 0; k + 1 < r.i.length; k++) {
+      const ax = roadNodes[r.i[k] * 2], az = roadNodes[r.i[k] * 2 + 1], bx = roadNodes[r.i[k + 1] * 2], bz = roadNodes[r.i[k + 1] * 2 + 1];
+      const L = Math.hypot(bx - ax, bz - az);
+      for (let s = 0; s < L; s += 10) {
+        const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L;
+        const v = nearestVSeg(x, z, 12);
+        n++;
+        if (v) votes.set(v.name, (votes.get(v.name) || 0) + 1);
+      }
+    }
+    let best = null, bv = 0;
+    for (const [k, v] of votes) if (v > bv) { bv = v; best = k; }
+    if (best && bv >= 2 && bv / n >= 0.6) { r.n = best; r.nv = 1; named0++; }
+  }
+  for (const r of roads) if (r.n && !osmNameByKey.has(normStreet(r.n))) osmNameByKey.set(normStreet(r.n), r.n);
+}
+STATS.roadsNamedFromRegion = named0;
+console.log('strade OSM senza nome a cui è stato dato il nome regionale:', named0);
 
 // ---------------------------------------------------------------- areas (landcover)
 function areaClass(t) {
@@ -370,11 +589,77 @@ function nearestStreet(x, z, maxD) {
   }
   return best;
 }
+// ---------------------------------------------------------------- civici reali ANNCSU (via Overture/OpenAddresses)
+const OV = path.join(RAW, 'overture', 'addresses.json');
+STATS.osmAddresses = addresses.length;
+if (fs.existsSync(OV)) {
+  const src = JSON.parse(fs.readFileSync(OV, 'utf8')).addresses;
+  const have = new Set(addresses.map((a) => normStreet(a.s) + '|' + String(a.n).toUpperCase()));
+  // nome della via: prima per nome normalizzato, poi per vicinanza alla via OSM più votata
+  const votes = new Map();
+  const pts = [];
+  for (const r of src) {
+    const x = r1(px(r.lon)), z = r1(pz(r.lat));
+    if (!inMargin(x, z)) continue;
+    const key = normStreet(r.s);
+    pts.push({ x, z, key, raw: r.s, n: String(r.n).toUpperCase().replace(/\s+/g, '') });
+    if (osmNameByKey.has(key)) continue;
+    const ns = nearestStreet(x, z, 60);
+    if (!ns) continue;
+    if (!votes.has(key)) votes.set(key, new Map());
+    const m = votes.get(key);
+    m.set(ns.name, (m.get(ns.name) || 0) + 1);
+  }
+  const nameOf = new Map();
+  for (const [key, m] of votes) {
+    let best = null, bv = 0, tot = 0;
+    for (const [k, v] of m) { tot += v; if (v > bv) { bv = v; best = k; } }
+    // accetta l'abbinamento geometrico solo se le parole in comune sono almeno una (es. "Giovanni XXIII")
+    const common = normStreet(best).split(' ').filter((w) => w.length > 2 && !['VIA', 'PIAZZA', 'VICOLO', 'STRADA', 'LARGO', 'CONTRA'].includes(w) && key.split(' ').includes(w));
+    if (best && bv / tot > 0.6 && common.length) nameOf.set(key, best);
+  }
+  let added = 0, linked = 0;
+  for (const p of pts) {
+    const s = osmNameByKey.get(p.key) || nameOf.get(p.key) || titleCase(p.raw);
+    if (!osmNameByKey.has(p.key)) osmNameByKey.set(p.key, s);
+    const id = normStreet(s) + '|' + p.n;
+    if (have.has(id)) continue;
+    have.add(id);
+    // edificio del civico: quello che lo contiene, altrimenti il più vicino entro 20 m
+    let best = null, bd = 20;
+    for (const b of buildingsNear(p.x - 20, p.z - 20, p.x + 20, p.z + 20)) {
+      if (pointInPoly(p.x, p.z, b.p)) { best = b; bd = 0; break; }
+      for (let i = 0, n = b.p.length; i < n; i += 2) {
+        const j = (i + 2) % n;
+        const ax = b.p[i], az = b.p[i + 1], vx = b.p[j] - ax, vz = b.p[j + 1] - az;
+        const t = Math.max(0, Math.min(1, ((p.x - ax) * vx + (p.z - az) * vz) / (vx * vx + vz * vz || 1)));
+        const d = Math.hypot(p.x - ax - vx * t, p.z - az - vz * t) + (['shed', 'garage', 'roof', 'barn'].includes(b.k) ? 6 : 0);
+        if (d < bd) { bd = d; best = b; }
+      }
+    }
+    const a = { x: p.x, z: p.z, s, n: p.n, src: 'anncsu' };
+    if (best) {
+      a.b = 1;
+      linked++;
+      if (!best.a) best.a = [s, p.n];
+      best.st = best.st || s;
+      if (bd > 0) { const [cx, cz] = centerOf(best.p); a.x = r1(cx); a.z = r1(cz); }
+    }
+    addresses.push(a);
+    added++;
+  }
+  STATS.anncsuAddresses = added;
+  STATS.anncsuLinkedToBuilding = linked;
+  console.log('civici ANNCSU:', added, 'aggiunti,', linked, 'associati a un edificio');
+}
+streetReal.clear();
+for (const a of addresses) if (a.s) streetReal.set(a.s, (streetReal.get(a.s) || 0) + 1);
+
 const perStreet = new Map();
 for (const b of buildings) {
   const [x, z] = centroid(b.p);
   const ns = nearestStreet(x, z, 80);
-  if (ns) b.st = ns.name; // via di riferimento (per la mappa e gli NPC)
+  if (ns && !b.st) b.st = ns.name; // via di riferimento (per la mappa e gli NPC)
   if (b.a || !['house', 'villa', 'apartments', 'farm', 'commercial', 'public', 'school'].includes(b.k)) continue;
   if (!ns || (streetReal.get(ns.name) || 0) >= 3) continue;
   if (!perStreet.has(ns.name)) perStreet.set(ns.name, []);
@@ -422,28 +707,92 @@ function elevation(lat, lon) {
   const a = demPixel(x0, y0), b = demPixel(x0 + 1, y0), c = demPixel(x0, y0 + 1), d = demPixel(x0 + 1, y0 + 1);
   return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
 }
+// DTM regionale 5 m (Regione del Veneto, LiDAR dove disponibile): ricostruito dalle finestre di grigio
+let dtmV = null;
+const DTMDIR = path.join(RAW, 'veneto', 'dtm');
+if (fs.existsSync(path.join(DTMDIR, 'index.json'))) {
+  const I = JSON.parse(fs.readFileSync(path.join(DTMDIR, 'index.json'), 'utf8'));
+  const W = I.cols * I.px, H = I.rows * I.px;
+  const grid = new Float32Array(W * H).fill(NaN);
+  let ok = true;
+  for (let r = 0; r < I.rows && ok; r++) for (let c = 0; c < I.cols && ok; c++) {
+    const wins = [];
+    for (let k = 0; k < I.windows; k++) {
+      const f = path.join(DTMDIR, `${r}_${c}_${k}.png`);
+      if (!fs.existsSync(f)) { ok = false; break; }
+      wins.push(PNG.sync.read(fs.readFileSync(f)).data);
+    }
+    if (!ok) break;
+    const bpp = wins[0].length / (I.px * I.px);
+    for (let j = 0; j < I.px; j++) for (let i = 0; i < I.px; i++) {
+      const o = (j * I.px + i) * bpp;
+      let k = 0;
+      while (k < I.windows - 1 && wins[k][o] === 255) k++;
+      const v = wins[k][o];
+      if (k === 0 && v === 0) continue; // fuori dal Veneto / nessun dato
+      grid[(r * I.px + j) * W + c * I.px + i] = k * I.win + (v / 255) * I.win;
+    }
+  }
+  if (ok) {
+    dtmV = { I, W, H, grid };
+    console.log('DTM Veneto 5 m', W, 'x', H);
+  } else console.warn('DTM Veneto incompleto: uso solo Terrarium');
+}
+function elevationV(lat, lon) {
+  if (!dtmV) return NaN;
+  const { I, W, H, grid } = dtmV;
+  const fx = (lon - I.w) / I.dlon - 0.5, fy = (I.n - lat) / I.dlat - 0.5;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+  if (x0 < 0 || y0 < 0 || x0 + 1 >= W || y0 + 1 >= H) return NaN;
+  const a = grid[y0 * W + x0], b = grid[y0 * W + x0 + 1], c = grid[(y0 + 1) * W + x0], d = grid[(y0 + 1) * W + x0 + 1];
+  return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty; // NaN se manca un vertice
+}
+// media 3x3 su passi di 5 m attorno al nodo: la heightmap ha passo 10 m
+function elevationBest(lat, lon) {
+  if (!dtmV) return NaN;
+  let s = 0, n = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const e = elevationV(lat + dy * dtmV.I.dlat, lon + dx * dtmV.I.dlon);
+    if (!Number.isNaN(e)) { const w = dx || dy ? 1 : 2; s += e * w; n += w; }
+  }
+  return n >= 6 ? s / n : NaN;
+}
 const HM_RES = 10;
 const HM_PAD = 1600;
 const hx0 = Math.floor((bx0 - HM_PAD) / HM_RES) * HM_RES, hz0 = Math.floor((bz0 - HM_PAD) / HM_RES) * HM_RES;
 const hw = Math.ceil((bx1 - bx0 + 2 * HM_PAD) / HM_RES) + 1, hh = Math.ceil((bz1 - bz0 + 2 * HM_PAD) / HM_RES) + 1;
 const hm = new Int16Array(hw * hh);
-let hmin = 1e9, hmax = -1e9;
+let hmin = 1e9, hmax = -1e9, hmV = 0, hmDiff = 0;
 for (let j = 0; j < hh; j++) for (let i = 0; i < hw; i++) {
   const x = hx0 + i * HM_RES, z = hz0 + j * HM_RES;
   const lon = lon0 + x / KLON, lat = lat0 - z / KLAT;
-  const e = elevation(lat, lon);
+  const ev = elevationBest(lat, lon);
+  const et = elevation(lat, lon);
+  const e = Number.isNaN(ev) ? et : ev;
+  if (!Number.isNaN(ev)) { hmV++; hmDiff += Math.abs(ev - et); }
   hm[j * hw + i] = Math.round(e * 10);
   hmin = Math.min(hmin, e); hmax = Math.max(hmax, e);
 }
 fs.writeFileSync(path.join(OUT, 'height.bin'), Buffer.from(hm.buffer));
-console.log('heightmap', hw, 'x', hh, 'min', hmin.toFixed(1), 'max', hmax.toFixed(1));
+console.log('heightmap', hw, 'x', hh, 'min', hmin.toFixed(1), 'max', hmax.toFixed(1), '| da DTM Veneto', ((100 * hmV) / (hw * hh)).toFixed(1) + '%', 'scarto medio vs Terrarium', (hmDiff / Math.max(hmV, 1)).toFixed(2), 'm');
+STATS.heightFromVenetoDTM = +((hmV) / (hw * hh)).toFixed(3);
 
 // ---------------------------------------------------------------- output
+for (const b of buildings) { delete b._gen; delete b._dbt; delete b._v; delete b._bb; }
+STATS.buildings = buildings.length;
+STATS.addresses = addresses.length;
+STATS.estimatedAddresses = est;
 const villages = pois.filter((p) => p.t === 'place:village' || p.t === 'place:hamlet');
 const carb = pois.find((p) => p.t === 'place:village' && p.n === 'Carbonara');
 const world = {
   version: 1,
-  source: 'OpenStreetMap contributors (ODbL) – elevazione: Terrarium/AWS Open Data (SRTM, EU-DEM)',
+  source: [
+    'OpenStreetMap contributors (ODbL)',
+    dtmV || fs.existsSync(path.join(VEN, 'edifici.json')) ? 'Regione del Veneto – IDT: Edifici DBT, grafo stradale, DTM 5 m (IODL 2.0)' : null,
+    fs.existsSync(OV) ? 'Civici: ANNCSU via OpenAddresses/Overture Maps (CC-BY 4.0)' : null,
+    'elevazione di riserva: Terrarium/AWS Open Data (SRTM, EU-DEM)',
+  ].filter(Boolean).join(' – '),
+  stats: STATS,
   generated: new Date().toISOString().slice(0, 10),
   origin: { lat: lat0, lon: lon0, klat: KLAT, klon: KLON },
   bounds: { x0: r1(bx0), x1: r1(bx1), z0: r1(bz0), z1: r1(bz1), margin: MARGIN },

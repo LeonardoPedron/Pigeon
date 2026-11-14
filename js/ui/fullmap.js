@@ -52,7 +52,7 @@ export class FullMap {
     const map = (this.map = L.map('leaflet', { zoomControl: true, maxZoom: 20, minZoom: 12, attributionControl: true, preferCanvas: true }));
     const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 20, maxNativeZoom: 19,
-      attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
+      attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors · Regione del Veneto (IODL 2.0) · ANNCSU/OpenAddresses (CC-BY 4.0)',
     });
     // mappa del gioco (raster generato dai dati OSM)
     const sw = this.ll(T.x0, T.z1), ne = this.ll(T.x1, T.z0);

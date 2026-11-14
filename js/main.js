@@ -77,8 +77,8 @@ class Game {
   }
 
   async load() {
-    progress(0.01, 'Scarico i dati OpenStreetMap del comune di Rovolon…');
-    this.data = await loadWorldData((p) => progress(p * 0.35, 'Scarico i dati OpenStreetMap del comune di Rovolon… ' + Math.round(p * 100) + '%'));
+    progress(0.01, 'Scarico i dati del comune di Rovolon…');
+    this.data = await loadWorldData((p) => progress(p * 0.35, 'Scarico i dati del comune di Rovolon… ' + Math.round(p * 100) + '%'));
     this.world = new World(this.data, this.scene, this.renderer, Q);
     await this.world.build((p, m) => progress(0.35 + p * 0.5, m));
     progress(0.86, 'Collego le strade e sveglio gli abitanti…');
