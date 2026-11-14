@@ -55,7 +55,8 @@ export class Multiplayer {
     // aspetta di scoprire chi c'è già prima di decidere il ruolo
     await new Promise((r) => setTimeout(r, this.net === 'local' ? 900 : 3000));
     await this.newRole();
-    this.status(`Stanza «${this.room}» · ${this.peers.size + 1} giocatori`);
+    this.status(this.statusText());
+    if (this.net !== 'local' && !this.t.turn) console.info('[mp] nessun server TURN configurato (js/net/config.js): sulle reti mobili il collegamento potrebbe fallire');
   }
 
   // ------------------------------------------------------------------ aggancio al gioco (senza modificarne i file)
@@ -152,7 +153,7 @@ export class Multiplayer {
     if (p.r) p.r.dispose();
     this.peers.delete(id);
     if (p.name !== '…') this.toast(`👋 ${p.name} è volato via`);
-    this.status(`Stanza «${this.room}» · ${this.peers.size + 1} giocatori`);
+    this.status(this.statusText());
   }
 
   // ------------------------------------------------------------------ messaggi
@@ -172,7 +173,7 @@ export class Multiplayer {
         if (m.unmask > 0) p.r.unmask(m.unmask);
         this.refreshLabel(p);
         if (first) { this.toast(`🐦 ${p.name} è entrato nella stanza`); if (this.role.commit) this.sendHello(from); }
-        this.status(`Stanza «${this.room}» · ${this.peers.size + 1} giocatori`);
+        this.status(this.statusText());
         break;
       }
       case 's':
@@ -603,6 +604,11 @@ export class Multiplayer {
     }
     dossier.addEventListener('click', () => this.toggleDossier(false));
     this.uiT = 0;
+  }
+
+  statusText() {
+    const relay = this.net === 'local' ? '' : this.t?.turn ? ' · 🔁 TURN' : ' · solo P2P diretto';
+    return `Stanza «${this.room}» · ${this.peers.size + 1} giocatori${relay}`;
   }
 
   status(t) { if (this.el) this.el.status.textContent = t; }

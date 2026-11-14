@@ -51,13 +51,16 @@ export class LocalTransport extends Base {
 
 export class TrysteroTransport extends Base {
   static async create(room) {
-    const lib = await import('../vendor/trystero.js');
-    return new TrysteroTransport(lib, room);
+    const [lib, { turnServers }] = await Promise.all([import('../vendor/trystero.js'), import('./ice.js')]);
+    const turn = await turnServers();
+    return new TrysteroTransport(lib, room, turn);
   }
-  constructor(lib, room) {
+  constructor(lib, room, turn = []) {
     super();
     this.id = lib.selfId;
-    this.room = lib.joinRoom({ appId: APP_ID }, room);
+    this.turn = turn.length;
+    // turnConfig: i server TURN si aggiungono agli STUN predefiniti di Trystero
+    this.room = lib.joinRoom({ appId: APP_ID, turnConfig: turn.length ? turn : undefined }, room);
     this.action = this.room.makeAction('pz', { onMessage: (data, ctx) => this.emit('msg', data, ctx.peerId) });
     this.room.onPeerJoin = (id) => this.emit('join', id);
     this.room.onPeerLeave = (id) => this.emit('leave', id);
