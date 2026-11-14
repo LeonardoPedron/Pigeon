@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Gioco 3D nel browser: un piccione spia nel comune di Rovolon ricostruito 1:1 da dati OpenStreetMap, Regione del Veneto e ANNCSU",
   "scripts": {
-    "fetch": "NODE_USE_ENV_PROXY=1 node scripts/fetch-osm.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-dem.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-veneto.mjs && python3 scripts/fetch-overture.py",
+    "fetch": "NODE_USE_ENV_PROXY=1 node scripts/fetch-osm.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-dem.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-ctrn.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-veneto.mjs && python3 scripts/fetch-overture.py",
     "fetch-osm": "NODE_USE_ENV_PROXY=1 node scripts/fetch-osm.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-dem.mjs",
-    "fetch-veneto": "NODE_USE_ENV_PROXY=1 node scripts/fetch-veneto.mjs",
+    "fetch-veneto": "NODE_USE_ENV_PROXY=1 node scripts/fetch-ctrn.mjs && NODE_USE_ENV_PROXY=1 node scripts/fetch-veneto.mjs",
     "fetch-overture": "python3 scripts/fetch-overture.py",
     "build-data": "node scripts/build-data.mjs",
     "vendor": "node scripts/vendor.mjs",

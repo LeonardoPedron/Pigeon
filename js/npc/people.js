@@ -178,7 +178,7 @@ export class NPCManager {
       x: 0, y: 0, z: 0, yaw: 0, speed: role === 'child' ? 1.5 : elder ? 0.85 : 1.25,
       state: 'inside', path: null, pi: 0, pt: 0, dest: null, actIdx: -1, idleT: 0, wander: null,
       talkCD: 10 + r() * 30, convo: null, phase: r() * 10, stained: false, shoutCD: 0, nearT: 0,
-      scale: role === 'child' ? 0.62 : 1, lean: elder ? 0.18 : 0,
+      scale: role === 'child' ? 0.58 + r() * 0.16 : (gender === 'f' ? 0.88 : 0.93) + r() * 0.1, lean: elder ? 0.18 : 0,
       colors: {
         shirt: col(pick(r, SHIRTS)), pants: col(pick(r, PANTS)), skin: col(pick(r, SKINS)),
         hair: elder ? col(pick(r, ['#d8d8d8', '#bdbdbd', '#9e9e9e', '#eeeeee'])) : col(pick(r, HAIRS)),
@@ -285,6 +285,12 @@ export class NPCManager {
       head: M(new THREE.BoxGeometry(0.2, 0.25, 0.22).translate(0, 0.125, 0)),
       hair: M(new THREE.BoxGeometry(0.22, 0.09, 0.24).translate(0, 0.045, -0.01)),
       stain: M(new THREE.SphereGeometry(0.07, 6, 4).scale(1, 0.4, 1)),
+      eyes: M(new THREE.BoxGeometry(0.13, 0.035, 0.02)),
+      mouth: M(new THREE.BoxGeometry(0.06, 0.015, 0.02)),
+      handL: M(new THREE.BoxGeometry(0.08, 0.1, 0.08)),
+      handR: M(new THREE.BoxGeometry(0.08, 0.1, 0.08)),
+      shoeL: M(new THREE.BoxGeometry(0.12, 0.07, 0.24)),
+      shoeR: M(new THREE.BoxGeometry(0.12, 0.07, 0.24)),
     };
     const C = (geo, cap = this.carPool) => {
       const m = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff }), cap);
@@ -351,7 +357,9 @@ export class NPCManager {
         ox += (-dz / L) * -off; oz += (dx / L) * -off; cnt++;
       }
       if (cnt) { ox /= cnt; oz /= cnt; }
-      pts.push([g.x(i) + ox, g.z(i) + oz]);
+      let qx = g.x(i) + ox, qz = g.z(i) + oz;
+      for (let f = 0.66; f > 0 && this.world.buildingAt(qx, qz)?.solid; f -= 0.33) { qx = g.x(i) + ox * f; qz = g.z(i) + oz * f; }
+      pts.push([qx, qz]);
     }
     pts.push([place.x, place.z]);
     // lunghezze
@@ -556,6 +564,7 @@ export class NPCManager {
     this.convoTimer -= dt;
     if (this.convoTimer <= 0) { this.convoTimer = 0.5; this.findConversations(px, pz); }
     this.updateConversations(dt, pigeon);
+    this.separate(dt);
     this.renderTimer -= dt;
     this.render(pigeon);
   }
@@ -623,7 +632,7 @@ export class NPCManager {
       // investimento del piccione
       const dx = pigeon.pos.x - c.x, dz = pigeon.pos.z - c.z;
       const along = dx * fx + dz * fz, lat = dx * fz - dz * fx;
-      if (Math.abs(along) < 2.2 && Math.abs(lat) < 1.0 && pigeon.pos.y - c.y < 1.6 && c.speed > 2.5) {
+      if (Math.abs(along) < 2.2 && Math.abs(lat) < 1.0 && pigeon.pos.y - c.y < 1.25 && pigeon.support?.ref !== c && c.speed > 2.5) {
         pigeon.knock(fx, fz, c.speed * 0.8);
         this.events.push({ type: 'carHit', x: c.x, z: c.z });
         this.say({ x: c.x, y: c.y, z: c.z, first: 'Automobilista', last: '' }, pick(r, SHOUTS.car), 'car');
@@ -651,6 +660,8 @@ export class NPCManager {
         if (b.convo) continue;
         const d = Math.hypot(a.x - b.x, a.z - b.z);
         const both = a.state === 'idle' && b.state === 'idle';
+        if (a.special?.topic && b.special?.topic && d < 20) { this.startConversation(a, b); break; }
+        if ((a.special?.topic || b.special?.topic) && !(a.special?.topic && b.special?.topic) && r() < 0.8) continue;
         const samePlace = both && a.dest && a.dest === b.dest;
         const maxD = samePlace ? a.dest.r * 2 + 6 : both ? 8 : 4;
         if (d < maxD && r() < (both ? 0.55 : 0.3)) {
@@ -679,7 +690,7 @@ export class NPCManager {
       street: this.streetNear(mx, mz) || 'via Roma',
       other: other.first + ' ' + other.last, otherF: otherF.first,
     };
-    const topic = forced || a.special?.topic || this.biasAt(mx, mz);
+    const topic = forced || a.special?.topic || b.special?.topic || this.biasAt(mx, mz);
     const conv = generateConversation(a, b, ctx, topic);
     const c = { a, b, ...conv, idx: -1, t: 0, x: mx, z: mz, heard: 0, id: Math.floor(r() * 1e9), forced: !!topic };
     for (const p of [a, b]) {
@@ -730,6 +741,33 @@ export class NPCManager {
 
   say(a, text, kind) {
     this.events.push({ type: 'say', who: a, text, kind, x: a.x, z: a.z });
+  }
+
+  // collisori dinamici vicini (per piccione, camera, bisogni)
+  collidersNear(x, z, r) {
+    const people = [], cars = [];
+    for (const a of this.visibleAgents || []) if (Math.abs(a.x - x) < r && Math.abs(a.z - z) < r) people.push(a);
+    for (const c of this.visibleCars || []) if (Math.abs(c.x - x) < r + 2 && Math.abs(c.z - z) < r + 2) cars.push(c);
+    return { people, cars };
+  }
+
+  separate(dt) {
+    const v = this.visibleAgents || [];
+    for (let i = 0; i < v.length; i++) {
+      const a = v[i];
+      if (a.state === 'talk') continue;
+      for (let j = i + 1; j < v.length; j++) {
+        const b = v[j];
+        const dx = a.x - b.x, dz = a.z - b.z, d = Math.hypot(dx, dz);
+        const m = 0.55 * Math.max(a.scale, b.scale);
+        if (d > 1e-4 && d < m) {
+          const push = ((m - d) / 2) * Math.min(1, dt * 8);
+          const nx = dx / d, nz = dz / d;
+          if (!this.world.buildingAt(a.x + nx * push, a.z + nz * push)?.solid) { a.x += nx * push; a.z += nz * push; }
+          if (b.state !== 'talk' && !this.world.buildingAt(b.x - nx * push, b.z - nz * push)?.solid) { b.x -= nx * push; b.z -= nz * push; }
+        }
+      }
+    }
   }
 
   // ------------------------------------------------------------------ interazioni
@@ -848,7 +886,7 @@ export class NPCManager {
       if (color) mesh.setColorAt(i, color);
     };
     const part = (x, y, z, rx) => { e.set(rx, 0, 0); q.setFromEuler(e); v.set(x, y, z); s.set(1, 1, 1); return L.compose(v, q, s); };
-    const white = new THREE.Color(0xf4f4ee);
+    const white = new THREE.Color(0xf4f4ee), dark = new THREE.Color(0x1a1410), lips = new THREE.Color(0x8a4a3a), shoe = new THREE.Color(0x2a2420);
     this.visibleAgents = [];
     for (let i = 0; i < n; i++) {
       const a = vis[i][1];
@@ -860,6 +898,7 @@ export class NPCManager {
       q.setFromAxisAngle(v.set(0, 1, 0), a.yaw);
       R.compose(v.set(a.x, a.y, a.z), q, s.set(a.scale, a.scale, a.scale));
       set(P.legL, i, part(0.1, 0.86, 0, sw), a.colors.pants);
+      a.renderSw = sw;
       set(P.legR, i, part(-0.1, 0.86, 0, -sw), a.colors.pants);
       set(P.torso, i, part(0, 0.84, 0, a.lean), a.colors.shirt);
       set(P.armL, i, part(0.27, 1.42, 0, -sw * 0.8), a.colors.shirt);
@@ -873,6 +912,14 @@ export class NPCManager {
       const st = part(0.05, 1.8, hz, 0);
       if (!a.stained) L.scale(v.set(0.001, 0.001, 0.001));
       set(P.stain, i, st, white);
+      set(P.eyes, i, part(0, 1.62, hz + 0.112, 0), dark);
+      set(P.mouth, i, part(0, 1.53, hz + 0.112, 0), lips);
+      // mani alla fine delle braccia, scarpe sotto le gambe (seguono l'oscillazione)
+      const swA = -sw * 0.8, swB = sw * 0.8 + talkArm;
+      set(P.handL, i, part(0.27, 1.42 - Math.cos(swA) * 0.62, Math.sin(swA) * 0.62, swA), a.colors.skin);
+      set(P.handR, i, part(-0.27, 1.42 - Math.cos(swB) * 0.62, Math.sin(swB) * 0.62, swB), a.colors.skin);
+      set(P.shoeL, i, part(0.1, 0.86 - Math.cos(sw) * 0.84 + 0.0, Math.sin(sw) * 0.84 + 0.04, sw), shoe);
+      set(P.shoeR, i, part(-0.1, 0.86 - Math.cos(-sw) * 0.84 + 0.0, Math.sin(-sw) * 0.84 + 0.04, -sw), shoe);
     }
     for (const k in P) {
       P[k].count = n;

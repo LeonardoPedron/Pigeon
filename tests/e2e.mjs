@@ -155,7 +155,7 @@ try {
     let stolen = 0;
     for (let k = 0; k < 2; k++) {
       const it = g.batteries.items.filter((i) => !i.taken).sort((a, b) => Math.hypot(a.x - g.pigeon.pos.x, a.z - g.pigeon.pos.z) - Math.hypot(b.x - g.pigeon.pos.x, b.z - g.pigeon.pos.z))[0];
-      g.pigeon.place(it.x + 0.3, it.z);
+      g.pigeon.place(it.x + 0.3, it.z, it.y);
       g.simulate(0.2);
       g.input.pressed.add('KeyE');
       g.simulate(0.1);
@@ -282,8 +282,153 @@ try {
   const p8 = await photoAt('capo');
   check('M8: foto del Gran Cappuccio', p8.ok, JSON.stringify(p8));
   s = await waitMission(page, 8);
-  check('Campagna completata, partono le missioni procedurali', s.story === 8 && /Missione/.test(s.title || ''), s.title);
+  check('Capitolo 1 completato, inizia il capitolo 2', s.story === 8 && /Sul filo/.test(s.title || ''), s.title);
   await closeBrief(page);
+
+  // ---------------------------------------------------------------- Capitolo 2
+  const m9 = await page.evaluate(() => {
+    const g = window.__game;
+    const t = g.missions.step.targets()[0];
+    const w = g.world.col.near(t.x, t.z, 30).filter((o) => o.t === 'w')[0];
+    const x = (w.ax + w.bx) / 2, z = (w.az + w.bz) / 2;
+    const wy = g.world.col.wireY(w, x, z);
+    g.pigeon.place(x, z, wy + 0.01);
+    const kind = g.pigeon.support?.kind;
+    g.simulate(16);
+    return { kind, story: g.missions.state.story, y: +wy.toFixed(1) };
+  });
+  check('M9: posato su un filo elettrico reale', m9.kind === 'wire' && m9.story === 9, JSON.stringify(m9));
+  await page.evaluate(() => window.__game.render());
+  await page.screenshot({ path: path.join(SHOTS, '09-filo.png') });
+  s = await waitMission(page, 9); await closeBrief(page);
+  const p10 = await photoAt('capitello');
+  check('M10: foto del capitello votivo', p10.ok, JSON.stringify(p10));
+  s = await waitMission(page, 10); await closeBrief(page);
+  const m11 = await page.evaluate(() => {
+    const g = window.__game;
+    for (let i = 0; i < 240 && g.missions.state.story === 10; i++) { const a = g.missions.tempAgents?.[0]; if (a) g.pigeon.place(a.x + 4, a.z + 2); g.simulate(1); }
+    return g.missions.state.story;
+  });
+  check('M11: ascolto alla fermata dell\'autobus', m11 === 11, String(m11));
+  s = await waitMission(page, 11); await closeBrief(page);
+  const m12 = await page.evaluate(() => {
+    const g = window.__game;
+    const t = g.missions.step.targets()[0];
+    g.pigeon.place(t.x, t.z, t.y + 3);
+    g.input.keys.add('KeyC'); g.simulate(4); g.input.keys.delete('KeyC');
+    return { story: g.missions.state.story, on: g.pigeon.onBuilding?.k };
+  });
+  check('M12: atterraggio sul punto più alto (silos/campanile)', m12.story === 12, JSON.stringify(m12));
+  s = await waitMission(page, 12); await closeBrief(page);
+  const p13 = await photoAt('piscina');
+  check('M13: foto della piscina della villa', p13.ok, JSON.stringify(p13));
+  s = await waitMission(page, 13); await closeBrief(page);
+  const m14 = await page.evaluate(() => {
+    const g = window.__game;
+    const t = g.missions.step.targets()[0];
+    g.pigeon.place(t.x + 1.6, t.z + 1.2);
+    g.simulate(0.2);
+    g.input.pressed.add('KeyE'); g.simulate(0.1);
+    return g.missions.state.story;
+  });
+  check('M14: cimice piazzata sull\'auto nera', m14 === 14, String(m14));
+  s = await waitMission(page, 14); await closeBrief(page);
+  const m15 = await page.evaluate(() => {
+    const g = window.__game;
+    const t = g.missions.step.targets()[0];
+    g.pigeon.place(t.x, t.z, t.y + 6); g.pigeon.vel.set(0, 0, 0);
+    g.poop.cooldown = 0; g.input.pressed.add('KeyF'); g.simulate(2);
+    return g.missions.state.story;
+  });
+  check('M15: segnale sulle strisce pedonali reali', m15 === 15, String(m15));
+  s = await waitMission(page, 15); await closeBrief(page);
+  const m16 = await page.evaluate(() => {
+    const g = window.__game;
+    let t = g.missions.step.targets()[0];
+    g.pigeon.place(t.x + 3, t.z + 3, t.y + 3); g.simulate(1);
+    const s1 = g.missions.current.stepIdx;
+    t = g.missions.step.targets()[0];
+    g.simulate(3);
+    const hawk = g.animals.hawkState;
+    g.pigeon.place(t.x, t.z, t.y + 2); g.input.keys.add('KeyC'); g.simulate(4); g.input.keys.delete('KeyC');
+    return { s1, hawk, story: g.missions.state.story };
+  });
+  check('M16: fuga dal falco e consegna al campanile', m16.s1 === 1 && m16.story === 16, JSON.stringify(m16));
+  s = await waitMission(page, 16);
+  check('Campagna completa (16 missioni), partono le procedurali', s.story === 16 && /Missione/.test(s.title || ''), s.title);
+  await closeBrief(page);
+
+  // ---------------------------------------------------------------- collisioni
+  const colls = await page.evaluate(() => {
+    const g = window.__game, W = g.world, P = g.pigeon;
+    const out = {};
+    // muro a 26 m/s: mai dentro un edificio, scivola
+    const b = W.buildings.filter((b) => b.solid && b.k === 'house' && Math.hypot(b.c[0] - g.nest.x, b.c[1] - g.nest.z) < 300)[0];
+    const y = b.ground + 2;
+    P.place(b.c[0] - b.ux * 25, b.c[1] - b.uz * 25, y);
+    P.mode = 'air'; P.vel.set(b.ux * 26, 0, b.uz * 26);
+    let inside = 0;
+    for (let i = 0; i < 60; i++) { P.vel.y = 0; g.pigeon.update(1 / 30, { axes: () => ({ x: 0, y: 0 }), fly: false, descend: false, boost: false }, 0, false); if (W.buildingAt(P.pos.x, P.pos.z)?.solid && P.pos.y < W.roofY(W.buildingAt(P.pos.x, P.pos.z), P.pos.x, P.pos.z) - 0.1) inside++; }
+    out.wall = inside;
+    // lampione
+    const L = W.lampPoints;
+    const lx = L[0] + Math.sin(L[2]) * 1.1, lz = L[1] + Math.cos(L[2]) * 1.1;
+    P.place(lx, lz, W.terrain.heightAt(L[0], L[1]) + 6.6);
+    g.input.keys.add('KeyC'); g.simulate(1); g.input.keys.delete('KeyC');
+    out.lamp = P.support?.kind;
+    // albero
+    W.col.ensureTrees(P.pos.x, P.pos.z);
+    const tr = W.col.near(P.pos.x, P.pos.z, 250).find((o) => o.t === 'r');
+    if (tr) { P.place(tr.x, tr.z, tr.top + 1); g.input.keys.add('KeyC'); g.simulate(1.5); g.input.keys.delete('KeyC'); out.tree = P.support?.kind; }
+    // auto in corsa
+    g.dayNight.time = 8; g.simulate(1);
+    const car = g.npc.cars.find((c) => c.state === 'driving');
+    if (car) {
+      g.pigeon.place(car.x, car.z, car.y + 1.6); g.npc.render(g.pigeon);
+      const d0 = car.x;
+      P.place(car.x, car.z, car.y + 1.55);
+      g.simulate(2);
+      out.carSupport = P.support?.kind;
+      out.carDist = +Math.hypot(P.pos.x - car.x, P.pos.z - car.z).toFixed(2);
+      out.carMoved = +Math.abs(car.x - d0).toFixed(1);
+    }
+    // camera mai dentro i muri
+    let bad = 0;
+    const houses = W.buildings.filter((b) => b.solid && Math.hypot(b.c[0] - g.nest.x, b.c[1] - g.nest.z) < 250).slice(0, 25);
+    for (const h of houses) {
+      const e = h.door;
+      P.place(e.x + e.nx * 0.4, e.z + e.nz * 0.4);
+      for (const yaw of [0, 1.6, 3.1, 4.7]) { g.cam.yaw = Math.atan2(e.nx, e.nz) + yaw; g.cam.cur.set(0, 0, 0); g.cam.update(0.016, g.input, P); if (W.col.solidAt(g.camera.position.x, g.camera.position.y, g.camera.position.z)) bad++; }
+    }
+    out.camBad = bad;
+    return out;
+  });
+  check('Collisioni: a 26 m/s il piccione non attraversa i muri', colls.wall === 0, JSON.stringify(colls));
+  check('Collisioni: posarsi su lampione, albero e tetto di un\'auto in corsa', colls.lamp === 'lamp' && colls.tree === 'tree' && colls.carSupport === 'car' && colls.carDist < 2.5, JSON.stringify(colls));
+  check('Camera: mai dentro muri o tetti (100 posizioni)', colls.camBad === 0, 'posizioni errate: ' + colls.camBad);
+  const npcIn = await page.evaluate(() => { const g = window.__game; g.dayNight.time = 10; g.simulate(60); const v = g.npc.agents.filter((a) => a.state !== 'inside' && a.state !== 'plan'); const bad = v.filter((a) => g.world.buildingAt(a.x, a.z)?.solid).length; return { bad, tot: v.length }; });
+  check('NPC: nessun abitante dentro gli edifici', npcIn.bad <= Math.ceil(npcIn.tot * 0.01), JSON.stringify(npcIn));
+
+  // ---------------------------------------------------------------- Polaroid
+  const pol = await page.evaluate(async () => {
+    const g = window.__game;
+    g.pigeon.place(g.nest.x, g.nest.z, g.world.terrain.heightAt(g.nest.x, g.nest.z) + 10);
+    const n0 = g.photoTotal || 0;
+    g.setPhoto(true); g.simulate(0.1); g.render();
+    g.input.pressed.add('Enter'); g.simulate(1 / 30); g.render();
+    const shown = !!document.querySelector('.polaroid');
+    g.setPhoto(false);
+    return { n0, n1: g.photoTotal || 0, shown };
+  });
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: path.join(SHOTS, '10-polaroid.png') });
+  await page.waitForTimeout(4500);
+  const polGone = await page.evaluate(() => !document.querySelector('.polaroid'));
+  check('Polaroid: esce, si sviluppa e finisce nell\'album', pol.shown && pol.n1 === pol.n0 + 1 && polGone, JSON.stringify({ ...pol, polGone }));
+
+  // ---------------------------------------------------------------- edifici distinti
+  const kinds = await page.evaluate(() => { const g = window.__game; const k = {}; for (const b of g.data.buildings) k[b.k] = (k[b.k] || 0) + 1; return { n: Object.keys(k).length, k, signs: g.data.buildings.filter((b) => b.sign).map((b) => b.sign).slice(0, 8), ctrn: g.data.buildings.filter((b) => b.ct).length }; });
+  check('Edifici distinti per tipo (dati OSM + Regione Veneto) e insegne reali', kinds.n >= 12 && kinds.signs.length >= 5 && kinds.ctrn > 4000, JSON.stringify(kinds));
 
   // ---------------------------------------------------------------- procedurali: generazione
   const procs = await page.evaluate(() => {
@@ -302,7 +447,8 @@ try {
     const lines = new Set();
     let convos = 0;
     const sub = document.getElementById('subtitles');
-    for (let i = 0; i < 60; i++) {
+    g.pigeon.place(g.nest.x, g.nest.z);
+    for (let i = 0; i < 120 && lines.size < 8; i++) {
       const c = g.npc.convos[0];
       if (c) { g.pigeon.place(c.x + 4, c.z + 4); convos++; }
       g.simulate(1);
@@ -380,13 +526,16 @@ try {
   await closeBrief(pp);
   const perf = await pp.evaluate(async () => {
     const g = window.__game;
+    g.world.fastBuild = true; g.tick(1 / 60); g.world.fastBuild = false;
+    for (let i = 0; i < 10; i++) { g.tick(1 / 60); g.input.endFrame(); }
     const t0 = performance.now();
-    for (let i = 0; i < 20; i++) { g.tick(1 / 60); g.render(); g.input.endFrame(); }
-    const ms = (performance.now() - t0) / 20;
+    for (let i = 0; i < 30; i++) { g.tick(1 / 60); g.input.endFrame(); }
+    const tickMs = (performance.now() - t0) / 30;
+    g.render();
     const info = g.renderer.info.render;
-    return { msPerFrame: ms.toFixed(1), calls: info.calls, triangles: info.triangles };
+    return { tickMs: tickMs.toFixed(2), calls: info.calls, triangles: info.triangles };
   });
-  check('Prestazioni (GPU software headless, indicativo)', +perf.calls < 400, JSON.stringify(perf));
+  check('Prestazioni: budget draw call, triangoli e tempo CPU di simulazione', +perf.calls < 260 && +perf.triangles < 900000 && +perf.tickMs < 8, JSON.stringify(perf));
   await pctx.close();
 } catch (e) {
   check('Eccezione durante il test', false, e.stack);

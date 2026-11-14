@@ -1,5 +1,5 @@
-// Scarica dal GeoServer della Regione del Veneto (IDT, licenza IODL 2.0):
-//   - Edifici del Veneto (DBT/CTRN 1:5000) con tipologia e uso         -> data/raw/veneto/edifici.json
+// Scarica dal GeoServer della Regione del Veneto (IDT, licenza IODL 2.0)
+// (gli edifici DBT/CTRN li scarica fetch-ctrn.mjs):
 //   - Grafo stradale regionale con i nomi ufficiali delle vie          -> data/raw/veneto/strade.json
 //   - DTM regionale a 5 m (LiDAR dove disponibile) in tile PNG         -> data/raw/veneto/dtm/
 // Il DTM è pubblicato solo come WMS: per ottenere le quote grezze lo si richiede più volte con uno
@@ -47,7 +47,6 @@ async function wfs(layer, file) {
   }
   fs.writeFileSync(f, JSON.stringify({ type: 'FeatureCollection', features: all }));
 }
-await wfs('rv:edifici_veneto_feb2022', 'edifici.json');
 await wfs('rv:c01070240012_elementostradale', 'strade.json');
 
 // ---------------------------------------------------------------- DTM 5 m (WMS)

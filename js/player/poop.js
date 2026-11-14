@@ -48,12 +48,12 @@ export class PoopSystem {
     this._n = new THREE.Vector3();
   }
 
-  drop(pigeon) {
+  drop(pigeon, side = 0) {
     if (this.cooldown > 0) return false;
     this.cooldown = 0.7;
     const m = new THREE.Mesh(this.dropGeo, this.dropMat);
     const back = -0.14;
-    m.position.set(pigeon.pos.x + Math.sin(pigeon.heading) * back, pigeon.pos.y + 0.1, pigeon.pos.z + Math.cos(pigeon.heading) * back);
+    m.position.set(pigeon.pos.x + Math.sin(pigeon.heading) * back + Math.cos(pigeon.heading) * side, pigeon.pos.y + 0.1, pigeon.pos.z + Math.cos(pigeon.heading) * back - Math.sin(pigeon.heading) * side);
     this.scene.add(m);
     this.drops.push({ mesh: m, vel: new THREE.Vector3(pigeon.vel.x * 0.9, Math.min(pigeon.vel.y, 0) - 0.5, pigeon.vel.z * 0.9), life: 12 });
     this.count++;
@@ -93,24 +93,35 @@ export class PoopSystem {
       const p = d.mesh.position;
       const steps = Math.max(1, Math.ceil((d.vel.length() * dt) / 0.3));
       let hit = null;
+      const col = this.world.col;
       for (let k = 0; k < steps && !hit; k++) {
+        const ox = p.x, oy = p.y, oz = p.z;
         p.addScaledVector(d.vel, dt / steps);
         const target = npc?.hitTest(p.x, p.y, p.z);
         if (target) { hit = { kind: target.kind, ref: target.ref, x: p.x, y: p.y, z: p.z }; break; }
-        const s = this.world.surfaceAt(p.x, p.z);
-        if (p.y <= s.y) {
+        const solid = col.solidAt(p.x, p.y, p.z);
+        if (solid && solid.kind === 'building') {
+          // colpito un muro: macchia verticale sulla facciata
+          const e = this.world.nearestEdge(solid.ref, ox, oz);
+          if (e && e.d < 0.4 && oy < this.world.roofY(solid.ref, e.x, e.z) - 0.1) {
+            hit = { kind: 'wall', ref: solid.ref, x: e.x + e.nx * 0.02, y: p.y, z: e.z + e.nz * 0.02, nx: e.nx, ny: 0, nz: e.nz };
+            break;
+          }
+        }
+        const g = col.groundAt(p.x, p.z, oy, 0.02);
+        if (p.y <= g.y) {
           let nx = 0, ny = 1, nz = 0;
-          if (s.b) {
-            const e = 0.3;
-            const hx = this.world.roofY(s.b, p.x + e, p.z) - this.world.roofY(s.b, p.x - e, p.z);
-            const hz = this.world.roofY(s.b, p.x, p.z + e) - this.world.roofY(s.b, p.x, p.z - e);
+          if (g.kind === 'roof') {
+            const e = 0.3, b = g.ref;
+            const hx = this.world.roofY(b, p.x + e, p.z) - this.world.roofY(b, p.x - e, p.z);
+            const hz = this.world.roofY(b, p.x, p.z + e) - this.world.roofY(b, p.x, p.z - e);
             const l = Math.hypot(hx, 2 * e, hz);
             nx = -hx / l; ny = (2 * e) / l; nz = -hz / l;
-          } else {
+          } else if (g.kind === 'ground') {
             this.world.terrain.normalAt(p.x, p.z, this._n);
             nx = this._n.x; ny = this._n.y; nz = this._n.z;
           }
-          hit = { kind: s.b ? 'roof' : 'ground', ref: s.b, x: p.x, y: s.y + 0.015, z: p.z, nx, ny, nz };
+          hit = { kind: g.kind === 'roof' ? 'roof' : g.kind === 'ground' ? 'ground' : 'object', ref: g.ref, x: p.x, y: g.y + 0.015, z: p.z, nx, ny, nz };
         }
       }
       d.life -= dt;
@@ -118,7 +129,7 @@ export class PoopSystem {
         this.scene.remove(d.mesh);
         this.drops.splice(i, 1);
         if (hit) {
-          if (hit.kind === 'roof' || hit.kind === 'ground') this.addSplat(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, 0.16 + Math.random() * 0.08);
+          if (hit.kind === 'roof' || hit.kind === 'ground' || hit.kind === 'wall' || hit.kind === 'object') this.addSplat(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, 0.16 + Math.random() * 0.08);
           hits.push(hit);
         }
       }

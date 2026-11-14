@@ -137,3 +137,48 @@ a { color: var(--accent); }
   #joy { width: 120px; height: 120px; left: 16px; bottom: 160px; }
   #joyKnob { left: 35px; top: 35px; }
 }
+
+/* ---------- Mirino spia ---------- */
+#photoOverlay { inset: 0 !important; }
+#photoOverlay .vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.75) 100%); }
+#photoOverlay .scan { position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(0,0,0,.08) 0 2px, transparent 2px 4px); mix-blend-mode: multiply; animation: scan 6s linear infinite; }
+@keyframes scan { from { background-position: 0 0; } to { background-position: 0 200px; } }
+#photoOverlay .corner { border-color: rgba(140,255,170,.85); }
+#photoOverlay .corner.tl { top: 6%; left: 6%; } #photoOverlay .corner.tr { top: 6%; right: 6%; } #photoOverlay .corner.bl { bottom: 6%; left: 6%; } #photoOverlay .corner.br { bottom: 6%; right: 6%; }
+#photoOverlay .ticks.h { position: absolute; left: 30%; right: 30%; top: 50%; height: 1px; background: repeating-linear-gradient(90deg, rgba(140,255,170,.8) 0 2px, transparent 2px 24px); }
+#photoOverlay .ticks.v { position: absolute; top: 30%; bottom: 30%; left: 50%; width: 1px; background: repeating-linear-gradient(0deg, rgba(140,255,170,.8) 0 2px, transparent 2px 24px); }
+#photoCross { width: 90px !important; height: 90px !important; margin: -45px !important; border: 2px solid rgba(255,90,90,.9) !important; border-radius: 6px !important; transition: border-color .2s, transform .2s; }
+#photoCross.lock { border-color: #6dff8a !important; transform: scale(.85); box-shadow: 0 0 18px rgba(109,255,138,.6); }
+#photoLock { position: absolute; top: -22px; left: 50%; transform: translateX(-50%); font: bold 11px monospace; color: #ff8a8a; letter-spacing: 2px; white-space: nowrap; }
+#photoCross.lock #photoLock { color: #6dff8a; }
+#photoRec { position: absolute; top: 8%; left: 8%; font: bold 14px monospace; color: #ff4d4d; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+#photoZoom, #photoDist, #photoMeta { position: absolute; font: bold 14px monospace; color: #9dffb4; text-shadow: 0 0 4px #000; }
+#photoZoom { top: 8%; right: 8%; } #photoDist { bottom: 9%; right: 8%; } #photoMeta { bottom: 9%; left: 8%; font-size: 12px; }
+#photoTarget { top: 12% !important; font-family: monospace; }
+#photoInfo { bottom: 3% !important; }
+
+/* ---------- Polaroid ---------- */
+#polaroidLayer { position: fixed; inset: 0; pointer-events: none; z-index: 15; overflow: hidden; }
+.polaroid { position: absolute; left: 50%; bottom: 0; width: min(300px, 62vw); background: #fbfaf5; padding: 12px 12px 54px; box-shadow: 0 18px 40px rgba(0,0,0,.55); border-radius: 3px; transform: translate(-50%, 110%) rotate(-3deg); animation: eject .9s cubic-bezier(.2,.9,.3,1.1) forwards; }
+.polaroid img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #111; filter: brightness(.15) contrast(.6) sepia(1) blur(5px); animation: develop 2.2s .8s ease-out forwards; }
+.polaroid .cap { position: absolute; left: 14px; right: 14px; bottom: 10px; font: 18px "Segoe Print", "Comic Sans MS", "Bradley Hand", cursive; color: #2a2a5a; line-height: 1.1; }
+.polaroid .cap small { display: block; font-size: 12px; color: #555; }
+.polaroid .stamp { position: absolute; top: 28px; right: 6px; transform: rotate(14deg); border: 3px solid #c0262d; color: #c0262d; font: bold 15px monospace; padding: 3px 8px; letter-spacing: 2px; opacity: 0; animation: stamp .35s 2.4s ease-out forwards; background: rgba(255,255,255,.4); }
+.polaroid.away { animation: flyaway .8s ease-in forwards; }
+@keyframes eject { to { transform: translate(-50%, -26vh) rotate(-3deg); } }
+@keyframes develop { to { filter: none; } }
+@keyframes stamp { from { opacity: 0; transform: rotate(14deg) scale(2.2); } to { opacity: .92; transform: rotate(14deg) scale(1); } }
+@keyframes flyaway { from { transform: translate(-50%, -26vh) rotate(-3deg); opacity: 1; } to { transform: translate(-50vw, -90vh) rotate(-30deg) scale(.15); opacity: 0; } }
+#album { position: absolute; left: 10px; top: 170px; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 3px 9px; font-size: 13px; transition: transform .2s; }
+#album.bump { transform: scale(1.35); }
+@media (max-width: 720px) { #album { top: 118px; } }
+#fps { position: fixed; left: 50%; top: 52px; transform: translateX(-50%); z-index: 9; font: 12px monospace; background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 6px; color: #9dffb4; pointer-events: none; }
+
+#lab, #achList { text-align: left; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.lab-item { display: flex; gap: 10px; align-items: center; justify-content: space-between; background: #232838; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.lab-item b { color: var(--accent); }
+.lab-item small { display: block; color: var(--muted); }
+.lab-item button { padding: 6px 10px; white-space: nowrap; }
+.ach { opacity: .45; } .ach.ok { opacity: 1; }
+#weather { font-size: 12px; color: #e7e1d3; }
