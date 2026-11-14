@@ -42,3 +42,25 @@ Il workflow `.github/workflows/pages.yml` pubblica il sito su GitHub Pages a ogn
 
 ## Crediti
 Dati © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Altimetria: Terrarium / AWS Open Data (SRTM, EU-DEM). Edifici: Regione del Veneto, IDT2 – DBT `edifici_veneto_feb2022` (open data). Librerie: three.js, Leaflet ed earcut (licenze MIT/BSD/ISC).
+
+## Multiplayer: chi è la spia?
+Nella schermata iniziale attiva **🌐 Multiplayer**, scegli un nome e una stanza. Puoi anche condividere un link con `?room=nome`. Tutti quelli nella stessa stanza si vedono come piccioni nella mappa, con il nome sopra la testa. La connessione è **P2P (WebRTC)**: la segnalazione passa per relay Nostr pubblici tramite [Trystero](https://github.com/dmotz/trystero), quindi funziona su GitHub Pages senza server.
+
+- **Ruoli segreti**: circa 1 giocatore su 4 è una **spia-robot** degli Illuminati. Gioca la campagna, ruba batterie e prende +5 punti al minuto finché non viene scoperta. Gli altri sono **piccioni veri**: niente batteria né missioni, devono smascherare le spie. In giro ci sono anche ~20 **piccioni comuni** controllati dal computer, con un nome come i giocatori, per confondere.
+- **Indizi** (dossier col tasto J):
+  - chi viene visto rubare una batteria (scintilla verde);
+  - l'occhio bionico che di notte lampeggia rosso da vicino;
+  - il tubare metallico;
+  - le **scansioni elettroniche**: tieni premuto R su un piccione, meglio con la fotocamera Q e lo zoom.
+- **Accusa** (X su un piccione entro 10 m): se è una spia +100 punti, e la spia viene smascherata col cappello in testa per 30 s, poi rinasce con un nuovo ruolo. Se è un piccione vero −40 punti e un minuto senza accuse.
+- I ruoli sono garantiti con **commit-reveal**: all'ingresso ognuno pubblica solo `SHA-256(ruolo|sale)` e, se accusato, lo rivela. Chi mente viene marcato 🚫.
+- Altri comandi: 1–4 emote, G spinge un piccione vicino, Tab classifica, V tuba (lo sentono tutti). Su mobile ci sono i pulsanti del pannello multiplayer.
+
+**Reti mobili (server TURN).** Sulle reti 4G/5G spesso i telefoni non riescono a collegarsi direttamente tra loro, e serve un server TURN che inoltri il traffico. Si configura in `js/net/config.js`:
+- con [Metered Open Relay](https://www.metered.ca/tools/openrelay/) (account gratuito, 20 GB al mese) bastano il nome dell'app (`meteredApp`) e la chiave API (`meteredApiKey`), e le credenziali vengono scaricate all'avvio;
+- oppure elenca il tuo server (ad esempio coturn) in `turn`.
+
+Per una prova al volo puoi usare anche l'URL: `?room=prova&turn=turn:host:3478&tu=utente&tc=password`. Nel pannello multiplayer compare «🔁 TURN» quando è attivo.
+
+Per provarlo in locale su più schede dello stesso browser senza rete: `http://localhost:8080/?net=local&room=prova`.
+Test: `node tests/mp.mjs`. Per rigenerare il bundle di Trystero: `node scripts/vendor-net.mjs`.
