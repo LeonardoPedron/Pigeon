@@ -15,10 +15,22 @@ import { HUD } from './ui/hud.js';
 import { Minimap } from './ui/minimap.js';
 import { FullMap } from './ui/fullmap.js';
 import { SHOUTS } from './npc/dialogue.js';
+import { Details } from './world/details.js';
+import { Polaroid } from './ui/polaroid.js';
+import { Animals } from './npc/animals.js';
+import { Weather, WEATHER_LABEL } from './systems/weather.js';
 
 const $ = (id) => document.getElementById(id);
 const SAVE_KEY = 'piccioneSpia.save.v1';
 const SET_KEY = 'piccioneSpia.settings.v1';
+const REC_KEY = 'piccioneSpia.records.v1';
+const ACH = [
+  ['fly', 'Primo volo', 'Decolla per la prima volta'], ['fly5', 'Ali instancabili', 'Vola per 5 km'], ['fly25', 'Giro del comune', 'Vola per 25 km'],
+  ['poop10', 'Bombardiere', 'Fai i bisogni 10 volte'], ['poop50', 'Flagello di Rovolon', 'Fai i bisogni 50 volte'], ['steal5', 'Ladro di pile', 'Ruba 5 batterie'],
+  ['photo', 'Primo scatto', 'Scatta una Polaroid'], ['photo10', 'Archivio segreto', 'Raccogli 10 foto'], ['wire', 'Funambolo', 'Posati su un filo elettrico'],
+  ['car', 'Passaggio gratis', 'Fatti trasportare sul tetto di un\'auto in corsa'], ['head', 'Cappello vivente', 'Posati sulla testa di qualcuno'], ['tower', 'Campanaro', 'Posati su un campanile'],
+  ['hawk', 'Scampato al falco', 'Sfuggi al falco'], ['story', 'Fine dell\'operazione', 'Completa la campagna'], ['proc5', 'Agente esperto', 'Completa 5 missioni procedurali'], ['days', 'Veterano', 'Sopravvivi fino al giorno 3'],
+];
 
 function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } }
@@ -42,13 +54,13 @@ class Game {
     this.canvas = $('game');
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: Q !== 'low' && !isTouch, logarithmicDepthBuffer: true, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.shadowMap.enabled = Q !== 'low';
+    this.renderer.shadowMap.enabled = Q !== 'low' && settings.shadows !== false;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.maxPR = Q === 'high' ? Math.min(devicePixelRatio, 2) : Q === 'medium' ? Math.min(devicePixelRatio, 1.5) : Math.min(devicePixelRatio, 1);
     this.pr = this.maxPR;
     this.renderer.setPixelRatio(this.pr);
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.08, 4500);
+    this.camera = new THREE.PerspectiveCamera(70, 1, 0.03, 4500);
     this.resize();
     addEventListener('resize', () => this.resize());
     this.input = new Input(this.canvas);
@@ -66,7 +78,12 @@ class Game {
     this.fpsT = 0;
     this.saveT = 0;
     this.lastHour = -1;
+    this.viewMul = settings.view || 1;
     this.markerPool = [];
+    this.fpsEl = document.createElement('div');
+    this.fpsEl.id = 'fps';
+    this.fpsEl.className = 'hidden';
+    document.body.append(this.fpsEl);
   }
 
   resize() {
@@ -83,8 +100,11 @@ class Game {
     await this.world.build((p, m) => progress(0.35 + p * 0.5, m));
     progress(0.86, 'Collego le strade e sveglio gli abitanti…');
     await new Promise((r) => setTimeout(r, 0));
+    this.details = new Details(this.world, this.scene);
+    this.details.build();
     this.graph = new RoadGraph(this.data);
     this.npc = new NPCManager(this.world, this.data, this.scene, this.graph, Q);
+    this.world.col.dynamic = (x, z, r) => this.npc.collidersNear(x, z, r);
     this.dayNight = new DayNight(this.scene, Q);
     this.pigeon = new Pigeon(this.world, this.scene);
     this.cam = new SpyCamera(this.camera, this.world);
@@ -94,7 +114,10 @@ class Game {
     this.hud = new HUD(this);
     this.minimap = new Minimap(this, $('minimap'));
     this.fullmap = new FullMap(this);
+    this.polaroid = new Polaroid();
     this.buildMarkers();
+    this.animals = new Animals(this);
+    this.weather = new Weather(this.scene, Q);
     progress(1, `Pronto: ${this.data.buildings.length} edifici, ${this.data.roads.length} strade, ${this.npc.agents.length} abitanti.`);
     // pre-compilazione shader con un primo render
     this.placeStart(null);
@@ -130,6 +153,7 @@ class Game {
       this.missions.load(save.missions);
       this.poop.load(save.splats);
       this.photos = save.photos || [];
+      this.polaroid.setCount(this.photos.length);
       Object.assign(this.pigeon.stats, save.stats || {});
       this.batteries.stolen = save.stolen || 0;
       this.poop.count = save.poops || 0;
@@ -137,6 +161,8 @@ class Game {
       this.dayNight.time = 8.2;
     }
     this.npc.init(this.dayNight.time);
+    this.applyUpgrades();
+    if (!save) this.pigeon.battery = this.pigeon.maxBattery;
     this.lastHour = Math.floor(this.dayNight.time);
     $('start').classList.add('hidden');
     this.hud.show();
@@ -177,6 +203,7 @@ class Game {
   }
 
   addSuspicion(n) {
+    if (this.upgrades.silent) n *= 0.6;
     this.suspicion = Math.min(100, this.suspicion + n);
     if (this.suspicion >= 100) {
       this.suspicion = 0;
@@ -194,7 +221,7 @@ class Game {
     this.photoRequested = true;
     const step = this.missions.step;
     const t = step?.photoTarget?.();
-    if (!t) { this.missions.event({ type: 'photo', ok: false }); this.hud.toast('📷 Foto scattata'); return; }
+    if (!t) { this.photoLabel = this.npc.streetNear(this.pigeon.pos.x, this.pigeon.pos.z) || 'Ricognizione'; this.photoSecret = false; this.missions.event({ type: 'photo', ok: false }); return; }
     const pos = new THREE.Vector3(t.x, t.y, t.z);
     this.camera.updateMatrixWorld();
     const ndc = pos.clone().project(this.camera);
@@ -206,25 +233,61 @@ class Game {
     else if (!this.world.lineOfSight(this.camera.position.clone(), pos)) { ok = false; reason = 'Qualcosa copre il bersaglio'; }
     this.hud.toast(ok ? `📷 Foto perfetta di: ${t.label}!` : '📷 ' + reason, ok ? 'good' : 'bad');
     this.photoLabel = ok ? t.label : 'Foto';
+    this.photoSecret = ok;
     this.missions.event({ type: 'photo', ok });
   }
 
   capturePhoto() {
     try {
       const src = this.renderer.domElement;
+      const S = Math.min(src.width, src.height);
       const c = document.createElement('canvas');
-      c.width = 240; c.height = Math.round((240 * src.height) / src.width);
-      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
-      this.photos.push({ img: c.toDataURL('image/jpeg', 0.6), label: this.photoLabel || 'Foto', t: this.dayNight.clock() + ' g' + this.dayNight.day });
-      if (this.photos.length > 9) this.photos.shift();
+      c.width = c.height = 320;
+      const g = c.getContext('2d');
+      g.drawImage(src, (src.width - S) / 2, (src.height - S) / 2, S, S, 0, 0, 320, 320);
+      // grana e calore da pellicola istantanea
+      g.fillStyle = 'rgba(255,200,120,.08)';
+      g.fillRect(0, 0, 320, 320);
+      const img = c.toDataURL('image/jpeg', 0.7);
+      const p = this.pigeon.pos;
+      const where = (this.npc.streetNear(p.x, p.z) || 'campagna') + ', ' + this.npc.villageName(p.x, p.z);
+      const when = `${this.dayNight.clock()} · giorno ${this.dayNight.day}`;
+      this.photoTotal = (this.photoTotal || 0) + 1;
+      this.photos.push({ img, label: this.photoLabel || 'Foto', t: when, where, secret: !!this.photoSecret });
+      if (this.photos.length > 12) this.photos.shift();
+      this.polaroid.show(img, this.photoLabel || 'Foto', `${where} — ${when}`, !!this.photoSecret);
+      this.polaroid.setCount(this.photos.length);
+      this.achieve?.('photo');
     } catch (e) { console.warn(e); }
+  }
+
+  // stato del mirino (bersaglio inquadrato, distanza, aggancio)
+  updateViewfinder(dt) {
+    this.vfT = (this.vfT || 0) - dt;
+    const z = this.cam.zoom;
+    document.getElementById('photoZoom').textContent = '×' + z.toFixed(1);
+    const t = this.missions.step?.photoTarget?.();
+    const cross = document.getElementById('photoCross'), lock = document.getElementById('photoLock'), dist = document.getElementById('photoDist');
+    const p = this.pigeon.pos;
+    document.getElementById('photoMeta').textContent = `${this.dayNight.clock()} · ${(this.npc.streetNear(p.x, p.z) || '').toUpperCase()}`;
+    if (!t) { cross.classList.remove('lock'); lock.textContent = 'RICOGNIZIONE'; dist.textContent = '— m'; return; }
+    const pos = new THREE.Vector3(t.x, t.y, t.z);
+    this.camera.updateMatrixWorld();
+    const ndc = pos.clone().project(this.camera);
+    const d = pos.distanceTo(this.camera.position);
+    dist.textContent = Math.round(d) + ' m';
+    const inFrame = ndc.z < 1 && Math.abs(ndc.x) < 0.75 && Math.abs(ndc.y) < 0.75;
+    if (this.vfT <= 0) { this.vfT = 0.25; this.vfLos = this.world.lineOfSight(this.camera.position.clone(), pos); }
+    const ok = inFrame && d / z <= t.maxD && this.vfLos;
+    cross.classList.toggle('lock', ok);
+    lock.textContent = ok ? 'AGGANCIATO' : !inFrame ? 'FUORI CAMPO' : d / z > t.maxD ? 'TROPPO LONTANO · ZOOM' : 'COPERTO';
   }
 
   trySteal() {
     const it = this.batteries.nearest(this.pigeon.pos, 1.8);
     if (!it) return false;
     const kind = this.batteries.steal(it);
-    this.pigeon.battery = Math.min(100, this.pigeon.battery + kind.amount);
+    this.pigeon.battery = Math.min(this.pigeon.maxBattery, this.pigeon.battery + kind.amount);
     this.audio.play('steal');
     this.hud.toast(`🔋 Rubata: ${kind.name} (+${kind.amount}%)`, 'good');
     const w = this.npc.witnesses(this.pigeon.pos, 14);
@@ -236,6 +299,82 @@ class Game {
     }
     this.missions.event({ type: 'steal' });
     return true;
+  }
+
+  interact() {
+    const s = this.missions.step;
+    if (s?.type === 'bug') { this.missions.event({ type: 'interact' }); if (!this.missions.step || this.missions.step !== s) { this.audio.play('bug'); this.hud.toast('🐞 Cimice piazzata!', 'good'); } else this.hud.toast("Avvicinati di più all'auto", 'bad'); }
+  }
+
+  get upgrades() { return this.missions.state.upgrades || (this.missions.state.upgrades = {}); }
+  applyUpgrades() {
+    const u = this.upgrades;
+    this.pigeon.maxBattery = u.battery ? 150 : 100;
+    this.pigeon.speedMul = u.turbo ? 1.25 : 1;
+    this.cam.maxZoom = u.zoom ? 12 : 8;
+    this.minimap.range = u.radar ? 260 : 160;
+  }
+  renderLab() {
+    const L = document.getElementById('lab');
+    const st = this.missions.state;
+    const items = [
+      ['battery', 'Batteria al litio maggiorata', 'Capacità 150% invece di 100%', 60],
+      ['turbo', 'Turbo potenziato', 'Volo e camminata +25% di velocità', 50],
+      ['zoom', 'Teleobiettivo ×12', 'Zoom della fotocamera spia fino a ×12', 30],
+      ['silent', 'Piume silenziose', 'Sospetto −40%, falco e gatti meno pericolosi', 70],
+      ['cluster', 'Bisogni a grappolo', 'Tre colpi alla volta (F)', 40],
+      ['radar', 'Antenna radar', 'Minimappa con raggio più ampio', 40],
+    ];
+    L.innerHTML = `<div>Punti Illuminati disponibili: <b>${st.points}</b></div>`;
+    for (const [k, name, desc, cost] of items) {
+      const d = document.createElement('div');
+      d.className = 'lab-item';
+      const own = !!this.upgrades[k];
+      d.innerHTML = `<div><b>${name}</b><small>${desc}</small></div>`;
+      const b = document.createElement('button');
+      b.textContent = own ? '✔ Installato' : `Compra (${cost})`;
+      b.disabled = own || st.points < cost;
+      b.addEventListener('click', () => { if (st.points >= cost && !this.upgrades[k]) { st.points -= cost; this.upgrades[k] = 1; this.applyUpgrades(); this.save(); this.audio.play('trophy'); this.renderLab(); } });
+      d.append(b);
+      L.append(d);
+    }
+  }
+  achieve(id) {
+    const A = this.missions.state.ach || (this.missions.state.ach = {});
+    if (A[id]) return;
+    const def = ACH.find((a) => a[0] === id);
+    if (!def) return;
+    A[id] = Date.now();
+    this.hud.toast(`🏆 Obiettivo sbloccato: ${def[1]}`, 'good');
+    this.audio.play('trophy');
+    this.missions.state.points += 5;
+  }
+  checkAchievements() {
+    const s = this.pigeon.stats, st = this.missions.state;
+    if (s.flown > 50) this.achieve('fly');
+    if (s.flown > 5000) this.achieve('fly5');
+    if (s.flown > 25000) this.achieve('fly25');
+    if (this.poop.count >= 10) this.achieve('poop10');
+    if (this.poop.count >= 50) this.achieve('poop50');
+    if (this.batteries.stolen >= 5) this.achieve('steal5');
+    if (this.photos.length >= 10) this.achieve('photo10');
+    if (this.pigeon.support?.kind === 'wire') this.achieve('wire');
+    if (this.pigeon.support?.kind === 'car' && this.pigeon.support.ref?.state === 'driving') this.achieve('car');
+    if (this.pigeon.support?.kind === 'head') this.achieve('head');
+    if (this.pigeon.onBuilding?.k === 'tower') this.achieve('tower');
+    if (st.proc >= 5) this.achieve('proc5');
+    if (this.dayNight.day >= 3) this.achieve('days');
+    const rec = lsGet(REC_KEY) || {};
+    const cur = { points: st.points, missions: st.done.length, km: +(s.flown / 1000).toFixed(1) };
+    let ch = false;
+    for (const k in cur) if (!(rec[k] >= cur[k])) { rec[k] = cur[k]; ch = true; }
+    if (ch) lsSet(REC_KEY, rec);
+  }
+  renderAchievements() {
+    const L = document.getElementById('achList');
+    const A = this.missions.state.ach || {};
+    const rec = lsGet(REC_KEY) || {};
+    L.innerHTML = `<div><b>Record personali</b>: ${rec.points || 0} punti · ${rec.missions || 0} missioni · ${rec.km || 0} km volati</div>` + ACH.map(([id, name, desc]) => `<div class="ach${A[id] ? ' ok' : ''}">${A[id] ? '🏆' : '🔒'} <b>${name}</b> — ${desc}</div>`).join('');
   }
 
   // ------------------------------------------------------------ marcatori 3D degli obiettivi
@@ -355,9 +494,10 @@ class Game {
     const active = !this.modal && !this.paused;
     if (active) {
       if (inp.hit('KeyQ', 'touch:photo')) this.setPhoto(!this.photoMode);
+      if (inp.hit('F3')) { this.showFps = !this.showFps; this.fpsEl.classList.toggle('hidden', !this.showFps); }
       if (inp.hit('KeyV')) { this.audio.play('coo'); this.missions.event({ type: 'coo' }); this.npc.say({ x: this.pigeon.pos.x, z: this.pigeon.pos.z, first: 'P-77', last: 'x' }, 'Tuuu-tuuu-tuuu!', 'coo'); }
-      if (inp.hit('KeyF', 'touch:poop') && !this.photoMode) { if (this.poop.drop(this.pigeon)) this.audio.play('drop'); }
-      if (inp.hit('KeyE', 'touch:steal')) this.trySteal();
+      if (inp.hit('KeyF', 'touch:poop') && !this.photoMode) { if (this.poop.drop(this.pigeon)) { this.audio.play('drop'); if (this.upgrades.cluster) { this.poop.cooldown = 0; this.poop.drop(this.pigeon, 0.18); this.poop.cooldown = 0; this.poop.drop(this.pigeon, -0.18); } } }
+      if (inp.hit('KeyE', 'touch:steal')) { if (!this.trySteal()) this.interact(); }
       if (this.photoMode && (inp.click || inp.hit('Enter'))) this.tryPhoto();
       this.timeMult = inp.down('KeyT') ? 30 : 1;
 
@@ -371,7 +511,11 @@ class Game {
         }
         this.missions.event({ type: 'poop', hit: h });
       }
-      this.dayNight.update(dt, this.pigeon.pos, this.viewDist(), this.timeMult);
+      this.dayNight.update(dt, this.pigeon.pos, this.viewDist() * this.viewMul, this.timeMult);
+      this.weather.update(dt, this.dayNight, this.camera.position, this.scene);
+      this.animals.update(dt);
+      this.achT = (this.achT || 0) - dt;
+      if (this.achT <= 0) { this.achT = 1; this.checkAchievements(); }
       this.npc.update(dt, this.dayNight.time, this.pigeon);
       this.batteries.update(dt, this.pigeon.pos);
       this.handleEvents();
@@ -386,14 +530,21 @@ class Game {
     this.cam.update(dt, inp, this.pigeon);
     this.world.setViewDistance(this.viewDist());
     this.world.update(this.pigeon.pos, dt);
+    this.details.update(this.pigeon.pos, this.viewDist());
+    if (this.photoMode) this.updateViewfinder(dt);
+    if (this.showFps) { this.fpsEl.textContent = `${this.fps.toFixed(0)} fps · ${this.renderer.info.render.calls} draw · ${(this.renderer.info.render.triangles / 1000).toFixed(0)}k tri · px ${this.pr.toFixed(2)}`; }
     this.world.setNight(this.dayNight.night);
     this.updateMarkers();
     this.hud.update(dt);
     this.minimap.update(dt);
-    this.audio.update(this.pigeon.mode === 'air' ? Math.hypot(this.pigeon.vel.x, this.pigeon.vel.z) : 0, this.dayNight.night);
+    this.audio.update(this.pigeon.mode === 'air' ? Math.hypot(this.pigeon.vel.x, this.pigeon.vel.z) : 0, this.dayNight.night, this.weather.cur.rain);
   }
 
   render() {
+    // ombre aggiornate a frame alterni (prestazioni)
+    this.frameN = (this.frameN || 0) + 1;
+    this.renderer.shadowMap.autoUpdate = false;
+    if (this.frameN % 2 === 0 || this.photoMode) this.renderer.shadowMap.needsUpdate = true;
     this.renderer.render(this.scene, this.camera);
     if (this.photoRequested) { this.photoRequested = false; this.capturePhoto(); }
   }
@@ -430,7 +581,7 @@ class Game {
     const data = {
       v: 1, pos: [p.pos.x, p.pos.y, p.pos.z].map((v) => Math.round(v * 100) / 100), heading: p.heading, battery: p.battery,
       time: this.dayNight.time, day: this.dayNight.day, suspicion: this.suspicion, missions: this.missions.serialize(),
-      splats: this.poop.serialize(), photos: this.photos.slice(-6), stats: p.stats, stolen: this.batteries.stolen, poops: this.poop.count,
+      splats: this.poop.serialize(), photos: this.photos.slice(-8), stats: p.stats, stolen: this.batteries.stolen, poops: this.poop.count,
     };
     if (!lsSet(SAVE_KEY, data)) { data.photos = []; lsSet(SAVE_KEY, data); }
   }
@@ -461,12 +612,18 @@ $('btnGallery').addEventListener('click', () => {
     const img = document.createElement('img');
     img.src = p.img;
     const cap = document.createElement('figcaption');
-    cap.textContent = `${p.label} · ${p.t}`;
+    cap.textContent = `${p.secret ? '🔒 ' : ''}${p.label} · ${p.where || ''} · ${p.t}`;
     f.append(img, cap);
     g.append(f);
   }
   g.classList.toggle('hidden');
 });
+$('btnLab').addEventListener('click', () => { game.renderLab(); $('lab').classList.toggle('hidden'); });
+$('btnAch').addEventListener('click', () => { game.renderAchievements(); $('achList').classList.toggle('hidden'); });
+$('optView').value = String(settings.view || 1);
+$('optView').addEventListener('change', (e) => { settings.view = +e.target.value; game.viewMul = settings.view; lsSet(SET_KEY, settings); });
+$('optShadows').checked = settings.shadows !== false;
+$('optShadows').addEventListener('change', (e) => { settings.shadows = e.target.checked; lsSet(SET_KEY, settings); game.renderer.shadowMap.enabled = e.target.checked && Q !== 'low'; game.dayNight.sun.castShadow = game.renderer.shadowMap.enabled; game.scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; }); });
 $('btnMissionList').addEventListener('click', () => {
   const l = $('missionList');
   const st = game.missions.state;

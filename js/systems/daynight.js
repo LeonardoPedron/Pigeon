@@ -3,15 +3,24 @@ import * as THREE from 'three';
 
 const SKY_VERT = `varying vec3 vDir; void main(){ vDir = normalize(position); vec4 p = modelViewMatrix * vec4(position,1.0); gl_Position = projectionMatrix * p; gl_Position.z = gl_Position.w; }`;
 const SKY_FRAG = `
-uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol; uniform float night;
+uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol; uniform float night; uniform float cloud; uniform float time; uniform vec3 cloudCol;
 varying vec3 vDir;
 float hash(vec3 p){ return fract(sin(dot(p, vec3(12.9898,78.233,45.164)))*43758.5453); }
+float h2(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(h2(i),h2(i+vec2(1,0)),f.x), mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),f.x), f.y); }
+float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<5;i++){ v+=a*n2(p); p*=2.03; a*=0.5; } return v; }
 void main(){
   vec3 d = normalize(vDir);
   float h = clamp(d.y, -0.2, 1.0);
   vec3 col = mix(horizon, top, pow(max(h,0.0), 0.55));
   float s = max(dot(d, sunDir), 0.0);
   col += sunCol * (pow(s, 800.0) * 4.0 + pow(s, 12.0) * 0.25);
+  if (d.y > 0.0) {
+    vec2 uv = d.xz / (d.y + 0.12) * 1.6 + vec2(time * 0.012, time * 0.004);
+    float c = smoothstep(1.0 - cloud, 1.15 - cloud * 0.5, fbm(uv));
+    c *= smoothstep(0.0, 0.18, d.y);
+    col = mix(col, cloudCol, c * 0.92);
+  }
   if (night > 0.0 && d.y > 0.0) {
     vec3 c = floor(d * 300.0);
     float st = step(0.9975, hash(c));
@@ -52,7 +61,7 @@ export class DayNight {
     scene.add(this.hemi);
     this.skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthWrite: false,
-      uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, sunDir: { value: new THREE.Vector3() }, sunCol: { value: new THREE.Color() }, night: { value: 0 } },
+      uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, sunDir: { value: new THREE.Vector3() }, sunCol: { value: new THREE.Color() }, night: { value: 0 }, cloud: { value: 0.35 }, time: { value: 0 }, cloudCol: { value: new THREE.Color(1, 1, 1) } },
     });
     this.sky = new THREE.Mesh(new THREE.SphereGeometry(1000, 24, 12), this.skyMat);
     this.sky.frustumCulled = false;
@@ -104,6 +113,8 @@ export class DayNight {
     this.skyMat.uniforms.sunDir.value.copy(isDay ? this.sunDir : this.sunDir.clone().multiplyScalar(-1));
     this.skyMat.uniforms.sunCol.value.copy(isDay ? sunc : new THREE.Color(0x000000));
     this.skyMat.uniforms.night.value = this.night;
+    this.skyMat.uniforms.time.value += dt;
+    this.skyMat.uniforms.cloudCol.value.set(0xffffff).lerp(new THREE.Color(0x30343c), this.night * 0.85);
     this.sky.position.copy(center);
     this.scene.fog.color.copy(hor);
     this.scene.fog.far = fogFar;

@@ -112,6 +112,9 @@ export class Audio {
       case 'alarm': this.tone(880, 0.25, 0.12, 'sawtooth', 440); break;
       case 'honk': this.tone(392, 0.35, 0.12, 'square'); this.tone(466, 0.35, 0.08, 'square'); break;
       case 'hit': this.noiseBurst(200, 1, 0.5, 0.2, 'lowpass'); break;
+      case 'screech': this.tone(2400, 0.7, 0.12, 'sawtooth', 1500); this.tone(2900, 0.6, 0.06, 'square', 1800); break;
+      case 'bug': this.tone(1200, 0.08, 0.1, 'square'); setTimeout(() => this.ok && this.tone(1600, 0.08, 0.1, 'square'), 120); break;
+      case 'trophy': [784, 988, 1175, 1568].forEach((f, i) => setTimeout(() => this.ok && this.tone(f, 0.22, 0.1, 'triangle'), i * 90)); break;
       case 'bell': {
         for (let k = 0; k < (opt.n || 1); k++) {
           setTimeout(() => {
@@ -141,8 +144,16 @@ export class Audio {
       default: break;
     }
   }
-  update(speed, night) {
+  update(speed, night, rain = 0) {
     if (!this.ok) return;
+    if (!this.rainGain) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise; src.loop = true;
+      const f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1500;
+      this.rainGain = this.ctx.createGain(); this.rainGain.gain.value = 0;
+      src.connect(f).connect(this.rainGain).connect(this.master); src.start();
+    }
+    this.rainGain.gain.setTargetAtTime(rain * 0.12, this.ctx.currentTime, 1);
     this.windGain.gain.setTargetAtTime(Math.min(0.25, speed / 100), this.ctx.currentTime, 0.2);
     this.amb.gain.setTargetAtTime(night * 0.012, this.ctx.currentTime, 1);
   }

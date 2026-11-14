@@ -13,10 +13,12 @@ function colorName(c) {
   return best;
 }
 
+export const STORY_N = 16;
+
 export class Missions {
   constructor(game) {
     this.g = game;
-    this.state = { story: 0, proc: 0, points: 0, done: [] };
+    this.state = { story: 0, proc: 0, points: 0, done: [], upgrades: {}, ach: {} };
     this.current = null;
     this.props = [];
     this.rnd = Math.random;
@@ -125,6 +127,52 @@ export class Missions {
       text: o.text, type: 'wait', targets: () => [],
       update: () => { const h = this.g.dayNight.time; return h >= o.from || h < o.to; },
       progress: () => 'Ora attuale: ' + this.g.dayNight.clock() + ' · tieni premuto T per accelerare il tempo',
+    };
+  }
+  S_perch(o) {
+    let t = 0;
+    return {
+      text: o.text, type: 'perch',
+      targets: () => [{ ...o.pos(), label: o.label, icon: '🪶' }],
+      update: (dt) => {
+        const pg = this.g.pigeon;
+        const ok = pg.mode === 'ground' && pg.support && o.kinds.includes(pg.support.kind) && (!o.r || Math.hypot(pg.pos.x - o.pos().x, pg.pos.z - o.pos().z) < o.r);
+        t = ok ? t + dt : Math.max(0, t - dt * 2);
+        return t >= o.duration;
+      },
+      progress: () => `Appollaiato: ${Math.floor(t)}/${o.duration} s`,
+    };
+  }
+  S_bug(o) {
+    return {
+      text: o.text, type: 'bug',
+      targets: () => [{ x: o.ref.x, y: o.ref.y + 2, z: o.ref.z, label: o.label, icon: '🐞' }],
+      event: (ev) => ev.type === 'interact' && Math.hypot(this.g.pigeon.pos.x - o.ref.x, this.g.pigeon.pos.z - o.ref.z) < 2.6,
+      progress: () => { const d = Math.hypot(this.g.pigeon.pos.x - o.ref.x, this.g.pigeon.pos.z - o.ref.z); return d < 2.6 ? 'Premi E per piazzare la cimice!' : 'Distanza: ' + fmtDist(d); },
+    };
+  }
+  S_poopAt(o) {
+    return {
+      text: o.text, type: 'poopAt',
+      targets: () => [{ ...o.pos(), label: o.label, icon: '💩' }],
+      event: (ev) => { if (ev.type !== 'poop' || !ev.hit) return false; const p = o.pos(); return Math.hypot(ev.hit.x - p.x, ev.hit.z - p.z) < o.r; },
+      progress: () => 'Volaci sopra e premi F',
+    };
+  }
+  S_timed(o) {
+    let t = o.time;
+    return {
+      text: o.text, type: 'timed',
+      targets: () => [{ ...o.pos(), label: o.label, icon: '⏱' }],
+      enter: () => { t = o.time; o.onEnter?.(); },
+      update: (dt) => {
+        t -= dt;
+        const pg = this.g.pigeon, p = o.pos();
+        if (o.building ? pg.mode === 'ground' && pg.onBuilding === o.building : Math.hypot(p.x - pg.pos.x, p.z - pg.pos.z) < o.r) return true;
+        if (t <= 0) { t = o.time; this.g.hud.toast('⏱ Tempo scaduto! Riprova da capo.', 'bad'); o.onFail?.(); }
+        return false;
+      },
+      progress: () => `Tempo rimasto: ${Math.ceil(Math.max(0, t))} s · ${fmtDist(Math.hypot(o.pos().x - this.g.pigeon.pos.x, o.pos().z - this.g.pigeon.pos.z))}`,
     };
   }
   S_coo() {
@@ -278,7 +326,7 @@ export class Missions {
           this.tempAgents = hooded;
         };
         return {
-          title: '8 · La riunione segreta', reward: 40,
+          title: '8 · La riunione segreta', reward: 40, chapterEnd: true,
           brief: `Ci siamo, P-77. Stanotte, sul sagrato della ${ch.n}, si riunirà una loggia rivale.\n\nAspetta che faccia buio (dopo le 21:00), raggiungi la chiesa, ascolta la loro conversazione e fotografa il loro capo: il Gran Cappuccio, quello con la tunica rossa.`,
           steps: [
             this.S_wait({ text: 'Aspetta la notte (dalle 21:00).', from: 21, to: 4.5 }),
@@ -287,7 +335,99 @@ export class Missions {
             this.S_photo({ text: 'Fotografa il Gran Cappuccio (tunica rossa).', label: 'Gran Cappuccio', maxD: 22, pos: () => ({ x: hooded[0]?.x ?? pl.x, y: (hooded[0]?.y ?? 0) + 1.2, z: hooded[0]?.z ?? pl.z }) }),
           ],
           cleanup: () => { for (const x of this.tempAgents || []) g.npc.removeAgent(x); this.tempAgents = null; },
-          final: true,
+        };
+      }
+      case 8: {
+        const pw = g.data.power;
+        let best = null;
+        for (const l of pw.lines) for (let i = 0; i + 3 < l.p.length; i += 2) {
+          const x = (l.p[i] + l.p[i + 2]) / 2, z = (l.p[i + 1] + l.p[i + 3]) / 2;
+          const d = Math.hypot(x - spawn.x, z - spawn.z);
+          if (!best || d < best.d) best = { x, z, d, big: l.big };
+        }
+        const pos = () => ({ x: best.x, y: W.terrain.heightAt(best.x, best.z) + (best.big ? 20 : 8), z: best.z });
+        return {
+          title: '9 · Sul filo', reward: 15, chapter: 2,
+          brief: `Capitolo 2 · Operazione Fili Scoperti.\n\nLa loggia del Gran Cappuccio comunica attraverso la linea elettrica che attraversa la campagna di ${this.village(best.x, best.z)}. Il tuo becco è un'antenna perfetta.\n\nPosati su un filo dell'elettricità e resta in ascolto per 15 secondi senza volare via.`,
+          steps: [this.S_perch({ text: 'Posati su un filo elettrico e resta lì 15 secondi.', kinds: ['wire'], duration: 15, label: 'Linea elettrica', pos })],
+        };
+      }
+      case 9: {
+        const sh = (g.data.furniture || []).filter((f) => f.t === 'shrine').sort((a, b) => Math.hypot(a.x - spawn.x, a.z - spawn.z) - Math.hypot(b.x - spawn.x, b.z - spawn.z))[0] || { x: spawn.x + 20, z: spawn.z };
+        const pos = () => ({ x: sh.x, y: W.terrain.heightAt(sh.x, sh.z) + 1.4, z: sh.z });
+        return {
+          title: '10 · Il capitello', reward: 20, chapter: 2,
+          brief: `Nei Colli Euganei i capitelli votivi sono ovunque. Quello ${sh.n ? '"' + sh.n + '" ' : ''}in ${this.streetName(sh.x, sh.z)} (${this.village(sh.x, sh.z)}) nasconde un messaggio cifrato inciso nella nicchia.\n\nFotografalo da vicino.`,
+          steps: [this.S_photo({ text: 'Fotografa il capitello votivo.', label: 'Capitello', maxD: 18, pos })],
+        };
+      }
+      case 10: {
+        const bs = (g.data.furniture || []).filter((f) => f.t === 'bus').sort((a, b) => Math.hypot(a.x - spawn.x, a.z - spawn.z) - Math.hypot(b.x - spawn.x, b.z - spawn.z))[0] || spawn;
+        const pl = g.npc.placeAt(bs.x, bs.z, 'fermata', 'bus', false, 3);
+        const a = g.npc.addSpecial({ first: 'Silvano', last: 'Furlan', place: pl, topic: 'illuminati', talkCD: 1, alwaysShow: true });
+        const b = g.npc.addSpecial({ first: 'Loredana', last: 'Bettio', gender: 'f', place: pl, topic: 'illuminati', talkCD: 0, alwaysShow: true });
+        this.tempAgents = [a, b];
+        const pos = () => ({ x: pl.x, y: this.groundY(pl.x, pl.z) + 3, z: pl.z });
+        return {
+          title: '11 · La fermata della corriera', reward: 20, chapter: 2,
+          brief: `Alla fermata dell'autobus ${bs.n ? '"' + bs.n + '"' : 'in ' + this.streetName(bs.x, bs.z)} due pendolari aspettano la corriera e parlano di cose strane.\n\nAscolta la loro conversazione.`,
+          steps: [this.S_listen({ text: 'Ascolta i pendolari alla fermata.', topic: 'illuminati', r: 40, label: 'Fermata bus', pos })],
+          cleanup: () => { for (const x of this.tempAgents || []) g.npc.removeAgent(x); this.tempAgents = null; },
+        };
+      }
+      case 11: {
+        const cand = W.buildings.filter((b) => b.k === 'silo').concat(W.buildings.filter((b) => b.k === 'tower' && Math.hypot(b.c[0] - spawn.x, b.c[1] - spawn.z) > 300));
+        const t = cand.sort((a, b) => Math.hypot(a.c[0] - spawn.x, a.c[1] - spawn.z) - Math.hypot(b.c[0] - spawn.x, b.c[1] - spawn.z))[0];
+        return {
+          title: '12 · Il punto più alto', reward: 20, chapter: 2,
+          brief: `Per intercettare le comunicazioni serve un punto alto. ${t.k === 'silo' ? 'Il silos' : 'Il campanile'} in ${this.streetName(t.c[0], t.c[1])} (${this.village(t.c[0], t.c[1])}) è perfetto.\n\nPosati in cima.`,
+          steps: [this.S_goto({ text: `Posati in cima al ${t.k === 'silo' ? 'silos' : 'campanile'}.`, label: t.k === 'silo' ? 'Silos' : 'Campanile', building: t, pos: () => ({ x: t.c[0], y: t.top + 1, z: t.c[1] }) })],
+        };
+      }
+      case 12: {
+        const pools = g.data.pools || [];
+        const cen = (p) => { let x = 0, z = 0; for (let i = 0; i < p.length; i += 2) { x += p[i]; z += p[i + 1]; } return [x / (p.length / 2), z / (p.length / 2)]; };
+        const pc = pools.map(cen).sort((a, b) => Math.hypot(a[0] - spawn.x, a[1] - spawn.z) - Math.hypot(b[0] - spawn.x, b[1] - spawn.z))[0] || [spawn.x, spawn.z];
+        const pos = () => ({ x: pc[0], y: W.terrain.heightAt(pc[0], pc[1]) + 0.3, z: pc[1] });
+        return {
+          title: '13 · La piscina della villa', reward: 20, chapter: 2,
+          brief: `Una villa in ${this.streetName(pc[0], pc[1])} ospita feste esclusive a bordo piscina. Gli Illuminati vogliono sapere chi ci va.\n\nFotografa la piscina dall'alto.`,
+          steps: [this.S_photo({ text: 'Fotografa la piscina della villa.', label: 'Piscina', maxD: 45, pos })],
+        };
+      }
+      case 13: {
+        const th = this.poi((p) => p.t === 'townhall' && /Rovolon/.test(p.n || '')) || this.poi((p) => p.t === 'townhall', spawn) || spawn;
+        const rec = W.buildingAt(th.x, th.z);
+        const spot = (rec && g.npc.parkSpot(rec)) || { x: th.x + 6, z: th.z + 6, yaw: 0 };
+        const car = g.npc.addParked(spot, '#0d0d10');
+        car.special = 'auto nera';
+        return {
+          title: '14 · La cimice', reward: 25, chapter: 2,
+          brief: "L'auto nera è tornata davanti al Municipio. Stavolta non basta una foto: avvicinati e piazza una cimice sotto il paraurti (tasto E quando sei accanto all'auto).",
+          steps: [this.S_bug({ text: "Piazza la cimice sull'auto nera (E).", ref: car, label: 'Auto nera' })],
+        };
+      }
+      case 14: {
+        const ch = this.poi((p) => p.t === 'place_of_worship', spawn) || spawn;
+        const cr = (g.data.furniture || []).filter((f) => f.t === 'crossing').sort((a, b) => Math.hypot(a.x - ch.x, a.z - ch.z) - Math.hypot(b.x - ch.x, b.z - ch.z))[0] || ch;
+        const pos = () => ({ x: cr.x, y: W.terrain.heightAt(cr.x, cr.z) + 0.3, z: cr.z });
+        return {
+          title: '15 · Il segnale', reward: 20, chapter: 2,
+          brief: `Per segnalare ai nostri agenti che la cimice è attiva serve un segno concordato: una "firma" di piccione sulle strisce pedonali in ${this.streetName(cr.x, cr.z)}.\n\nColpisci le strisce dall'alto (F).`,
+          steps: [this.S_poopAt({ text: 'Colpisci le strisce pedonali con i tuoi bisogni.', label: 'Strisce pedonali', r: 3.5, pos })],
+        };
+      }
+      case 15: {
+        const pk = this.poi((p) => p.t === 'peak' && /Grande/.test(p.n || '')) || this.poi((p) => p.t === 'peak', spawn);
+        const ch = this.poi((p) => p.t === 'place_of_worship' && /Giovanni/.test(p.n || ''), spawn) || this.poi((p) => p.t === 'place_of_worship', spawn);
+        const rec = W.buildingsNear(ch.x, ch.z, 45).find((b) => b.k === 'tower') || W.buildingAt(ch.x, ch.z);
+        return {
+          title: '16 · Fuga dal falco', reward: 50, chapter: 2, final: true,
+          brief: `La loggia ha addestrato un falco. Recupera il microfilm nascosto sulla vetta del ${pk.n} e riportalo al campanile di Carbonara entro 150 secondi.\n\nSe il falco ti punta, rifugiati sotto una tettoia o tra gli alberi!`,
+          steps: [
+            this.S_goto({ text: `Vola sulla vetta del ${pk.n} a prendere il microfilm.`, label: pk.n, r: 60, pos: () => ({ x: pk.x, y: W.terrain.heightAt(pk.x, pk.z) + 5, z: pk.z }) }),
+            this.S_timed({ text: 'Riporta il microfilm al campanile di Carbonara!', label: 'Campanile', time: 150, building: rec, pos: () => ({ x: rec.c[0], y: rec.top + 1, z: rec.c[1] }), onEnter: () => g.animals?.forceHawk(), onFail: () => g.animals?.forceHawk() }),
+          ],
         };
       }
       default: return null;
@@ -318,7 +458,7 @@ export class Missions {
     const r = this.rnd;
     const near = (list, maxD) => list.filter((p) => Math.hypot(p.x - pg.x, p.z - pg.z) < maxD);
     const named = near(g.data.pois.filter((p) => p.n && p.b && !p.t.startsWith('place') && p.t !== 'peak'), 1600);
-    const types = ['listen', 'listen', 'photoNpc', 'photoPlace', 'poopCar', 'poopCar', 'follow', 'steal', 'roof', 'roof'];
+    const types = ['listen', 'listen', 'photoNpc', 'photoPlace', 'poopCar', 'poopCar', 'follow', 'steal', 'roof', 'roof', 'wire', 'bug', 'crossing'];
     const type = types[Math.floor(r() * types.length)];
     const n = this.state.proc + 1;
     const reward = 15 + Math.floor(r() * 15);
@@ -381,6 +521,28 @@ export class Missions {
         };
       }
     }
+    if (type === 'wire') {
+      let best = null;
+      for (const l of g.data.power.lines) for (let i = 0; i + 3 < l.p.length; i += 2) {
+        const x = (l.p[i] + l.p[i + 2]) / 2, z = (l.p[i + 1] + l.p[i + 3]) / 2, d = Math.hypot(x - pg.x, z - pg.z);
+        if (d < 1500 && (!best || r() < 0.3)) best = { x, z, big: l.big };
+      }
+      if (best) return { title: T('In ascolto sul filo'), reward, brief: `Intercetta le comunicazioni sulla linea elettrica vicino a ${this.village(best.x, best.z)}: posati su un filo per 12 secondi.`, steps: [this.S_perch({ text: 'Posati su un filo elettrico per 12 secondi.', kinds: ['wire'], duration: 12, label: 'Linea elettrica', pos: () => ({ x: best.x, y: g.world.terrain.heightAt(best.x, best.z) + (best.big ? 20 : 8), z: best.z }) })] };
+    }
+    if (type === 'bug') {
+      const cars = g.npc.parked.filter((c) => Math.hypot(c.x - pg.x, c.z - pg.z) < 500 && Math.hypot(c.x - pg.x, c.z - pg.z) > 40);
+      if (cars.length) {
+        const c = cars[Math.floor(r() * cars.length)];
+        return { title: T('Cimice'), reward, brief: `Piazza una cimice sull'auto ${colorName(c.color)} parcheggiata in ${this.streetName(c.x, c.z)}.`, steps: [this.S_bug({ text: `Piazza la cimice sull'auto ${colorName(c.color)} (E).`, ref: c, label: 'Auto ' + colorName(c.color) })] };
+      }
+    }
+    if (type === 'crossing') {
+      const cr = (g.data.furniture || []).filter((f) => f.t === 'crossing' && Math.hypot(f.x - pg.x, f.z - pg.z) < 1500);
+      if (cr.length) {
+        const c = cr[Math.floor(r() * cr.length)];
+        return { title: T('Firma sulle strisce'), reward, brief: `Lascia il segnale concordato sulle strisce pedonali in ${this.streetName(c.x, c.z)}.`, steps: [this.S_poopAt({ text: 'Colpisci le strisce pedonali (F).', label: 'Strisce', r: 3.5, pos: () => ({ x: c.x, y: g.world.terrain.heightAt(c.x, c.z) + 0.3, z: c.z }) })] };
+      }
+    }
     if (type === 'steal') {
       const k = 2 + Math.floor(r() * 2);
       return { title: T('Scorte di energia'), reward: 5, brief: `La base ha bisogno di energia. Ruba ${k} batterie.`, steps: [this.S_steal({ text: `Ruba ${k} batterie.`, count: k })] };
@@ -399,8 +561,8 @@ export class Missions {
 
   // ------------------------------------------------------------ ciclo di vita
   start(showBrief = true) {
-    const m = this.state.story < 8 ? this.story(this.state.story) : this.procedural();
-    m.kind = this.state.story < 8 ? 'story' : 'proc';
+    const m = this.state.story < STORY_N ? this.story(this.state.story) : this.procedural();
+    m.kind = this.state.story < STORY_N ? 'story' : 'proc';
     m.stepIdx = 0;
     this.current = m;
     this.enterStep();
@@ -424,13 +586,17 @@ export class Missions {
     if (m.stepIdx >= m.steps.length) {
       m.cleanup?.();
       this.state.points += m.reward + 10;
-      if (m.reward) this.g.pigeon.battery = Math.min(100, this.g.pigeon.battery + m.reward);
+      if (m.reward) this.g.pigeon.battery = Math.min(this.g.pigeon.maxBattery, this.g.pigeon.battery + m.reward);
       this.state.done.push(m.title);
       if (m.kind === 'story') this.state.story++; else this.state.proc++;
       this.g.hud.toast(`Missione completata: ${m.title}` + (m.reward ? ` (+${m.reward}% batteria)` : ''), 'good');
       this.g.save();
+      if (m.chapterEnd) {
+        this.g.hud.briefing('Capitolo 1 completato!', 'Straordinario, P-77. Le prove raccolte su Carbonara, Bastia e i Colli Euganei hanno smascherato la loggia del Gran Cappuccio.\n\nMa la loggia ha altri canali di comunicazione… Il capitolo 2 sta per cominciare.\n\n(Nel menu di pausa trovi il Laboratorio Illuminati: spendi i Punti per potenziare il piccione.)');
+      }
       if (m.final) {
-        this.g.hud.briefing('Operazione completata!', 'Straordinario, P-77. Le prove raccolte su Carbonara, Bastia e i Colli Euganei hanno smascherato la loggia del Gran Cappuccio.\n\nGli Illuminati ti ringraziano. Ma il lavoro di una spia non finisce mai: da ora riceverai nuovi incarichi in tutto il comune di Rovolon.');
+        this.g.hud.briefing('Operazione completata!', 'Missione compiuta, agente P-77! La loggia del Gran Cappuccio è stata smantellata e il comune di Rovolon è di nuovo sotto il nostro sguardo.\n\nDa ora riceverai incarichi procedurali infiniti in tutto il comune.');
+        this.g.achieve?.('story');
         this.current = null;
         setTimeout(() => this.start(false), 500);
         return;

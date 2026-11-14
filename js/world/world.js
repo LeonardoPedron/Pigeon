@@ -1,7 +1,8 @@
 // Mondo 3D: terreno a chunk con LOD, edifici, strade, acqua, alberi, lampioni, targhe dei civici, collisioni.
 import * as THREE from 'three';
-import { prepareBuilding, meshBuilding, roofY, insideFootprint, nearestEdge, GeoBuf } from './buildings.js';
-import { buildLandCanvas, facadeTextures, industrialTexture, roofTexture, textTexture, ROAD_WIDTH, ROAD_COLOR, CLASS_ID } from './textures.js';
+import { prepareBuilding, meshBuildingDetailed, meshBuildingSimple, roofY, roofYRaw, insideFootprint, insideRoof, nearestEdge, GeoBuf, chimneySpots, canopyPillars, terraceSpots, ruinWallTops } from './buildings.js';
+import { Collision } from './collision.js';
+import { buildLandCanvas, facadeAtlas, roofTexture, textTexture, signTexture, roadColor, ROAD_WIDTH, ROAD_COLOR, CLASS_ID } from './textures.js';
 import { hash2, mulberry32, polyCentroid } from './data.js';
 
 const CHUNK = 250;
@@ -40,6 +41,7 @@ export class World {
     this.tChunks = new Map();
     this.treeChunks = new Map();
     this.viewDist = 1500;
+    this.signMeshes = [];
   }
 
   async build(progress) {
@@ -57,16 +59,18 @@ export class World {
     this.landTex.minFilter = THREE.LinearMipmapLinearFilter;
 
     this.terrainMat = new THREE.MeshLambertMaterial({ map: this.landTex });
-    const fac = facadeTextures(aniso);
+    const fac = facadeAtlas(aniso);
     this.wallMat = new THREE.MeshLambertMaterial({ map: fac.map, vertexColors: true, emissive: 0xffd48a, emissiveMap: fac.emap, emissiveIntensity: 0 });
-    this.indMat = new THREE.MeshLambertMaterial({ map: industrialTexture(aniso), vertexColors: true });
-    this.roofMat = new THREE.MeshLambertMaterial({ map: roofTexture(aniso), vertexColors: true });
+    this.roofMat = new THREE.MeshLambertMaterial({ map: roofTexture(aniso), vertexColors: true, side: THREE.DoubleSide });
+    this.flatMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    this.detailMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    this.glassMat = new THREE.MeshLambertMaterial({ map: fac.map, vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide });
+    this.simpleMat = new THREE.MeshLambertMaterial({ vertexColors: true });
     this.roadMat = new THREE.MeshLambertMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
     this.waterMat = new THREE.MeshLambertMaterial({ color: 0x4f86ad, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
 
-    progress(0.15, 'Costruisco ' + d.buildings.length + ' edifici reali…');
+    progress(0.15, 'Costruisco ' + d.buildings.length + ' edifici reali (OSM + Regione Veneto)…');
     await yieldFrame();
-    // prepara edifici + griglia collisioni
     for (let i = 0; i < d.buildings.length; i++) {
       const rec = prepareBuilding(d.buildings[i], this.terrain, i);
       this.buildings.push(rec);
@@ -79,7 +83,8 @@ export class World {
         a.push(i);
       }
     }
-    // mesh per chunk
+    this.computeDoors();
+    // chunk: LOD lontano subito, dettaglio generato vicino al piccione
     const byChunk = new Map();
     for (const rec of this.buildings) {
       const cx = Math.floor((rec.minx + rec.maxx) / 2 / CHUNK), cz = Math.floor((rec.minz + rec.maxz) / 2 / CHUNK);
@@ -89,25 +94,22 @@ export class World {
     }
     let done = 0;
     for (const [k, ch] of byChunk) {
-      const walls = new GeoBuf(), ind = new GeoBuf(), roofs = new GeoBuf();
-      for (const rec of ch.list) meshBuilding(rec, rec.ind ? ind : walls, roofs);
+      const simple = new GeoBuf();
+      for (const rec of ch.list) meshBuildingSimple(rec, { simple });
+      const far = new THREE.Mesh(makeGeometry(simple), this.simpleMat);
+      far.matrixAutoUpdate = false;
+      far.castShadow = true;
       const grp = new THREE.Group();
-      for (const [buf, mat] of [[walls, this.wallMat], [ind, this.indMat], [roofs, this.roofMat]]) {
-        if (!buf.count) continue;
-        const m = new THREE.Mesh(makeGeometry(buf), mat);
-        m.castShadow = true;
-        m.receiveShadow = true;
-        m.matrixAutoUpdate = false;
-        grp.add(m);
-      }
-      grp.userData.c = [(ch.cx + 0.5) * CHUNK, (ch.cz + 0.5) * CHUNK];
+      grp.add(far);
+      grp.userData = { c: [(ch.cx + 0.5) * CHUNK, (ch.cz + 0.5) * CHUNK], far, near: null, list: ch.list, key: k };
       this.group.add(grp);
       this.bChunks.set(k, grp);
-      if (++done % 12 === 0) {
+      if (++done % 40 === 0) {
         progress(0.15 + 0.35 * (done / byChunk.size), 'Costruisco gli edifici… ' + Math.round((100 * done) / byChunk.size) + '%');
         await yieldFrame();
       }
     }
+    this.detailDist = this.quality === 'low' ? 260 : this.quality === 'medium' ? 380 : 520;
 
     progress(0.52, 'Traccio ' + d.roads.length + ' strade e vie…');
     await yieldFrame();
@@ -120,8 +122,60 @@ export class World {
     this.buildTreeAssets();
     this.buildLamps();
     this.buildPlates();
-    this.computeDoors();
+    this.col = new Collision(this);
+    this.registerColliders();
     progress(0.8, 'Mondo pronto');
+  }
+
+  registerColliders() {
+    const col = this.col;
+    for (const rec of this.buildings) {
+      for (const c of chimneySpots(rec)) col.addCyl(c.x, c.z, 0.32, c.y - 0.5, c.top + 0.47, true, 'chimney');
+      if (rec.k === 'canopy') for (const [x, z] of canopyPillars(rec)) col.addCyl(x, z, 0.14, rec.base, roofY(rec, x, z) - 0.15, false, 'pillar');
+      for (const t of terraceSpots(rec)) { col.addCyl(t.x, t.z, 0.05, t.y, t.y + 2.4, false, 'pole'); col.addDisc(t.x, t.z, 1.2, t.y + 2.55, 'umbrella'); }
+      if (rec.k === 'ruins') {
+        const tops = ruinWallTops(rec), p = rec.outer;
+        for (let e = 0; e < p.length / 2; e++) {
+          const i = e * 2, j = (i + 2) % p.length;
+          col.addSeg(p[i], p[i + 1], p[j], p[j + 1], rec.base, tops[e], rec.base, tops[e], 0.45, 'wall');
+        }
+      }
+    }
+    const L = this.lampPoints;
+    for (let i = 0; i < L.length; i += 3) {
+      const y = this.terrain.heightAt(L[i], L[i + 1]);
+      col.addCyl(L[i], L[i + 1], 0.09, y, y + 6, true, 'lamp');
+      col.addDisc(L[i] + Math.sin(L[i + 2]) * 1.1, L[i + 1] + Math.cos(L[i + 2]) * 1.1, 0.28, y + 6.0, 'lamp');
+    }
+  }
+
+  buildDetailChunk(grp) {
+    const u = grp.userData;
+    const bufs = { walls: new GeoBuf(), roofs: new GeoBuf(), flat: new GeoBuf(), detail: new GeoBuf(), glass: new GeoBuf() };
+    const signs = [];
+    for (const rec of u.list) meshBuildingDetailed(rec, bufs, signs);
+    const near = new THREE.Group();
+    for (const [buf, mat, shadow] of [[bufs.walls, this.wallMat, true], [bufs.roofs, this.roofMat, true], [bufs.flat, this.flatMat, true], [bufs.detail, this.detailMat, true], [bufs.glass, this.glassMat, false]]) {
+      if (!buf.count) continue;
+      const m = new THREE.Mesh(makeGeometry(buf), mat);
+      m.castShadow = shadow;
+      m.receiveShadow = true;
+      m.matrixAutoUpdate = false;
+      near.add(m);
+    }
+    for (const sg of signs) {
+      const { tex, aspect } = signTexture(sg.text, sg.kind);
+      const h = Math.min(0.8, sg.w / aspect);
+      const w = h * aspect;
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshLambertMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0 }));
+      m.position.set(sg.x, sg.y, sg.z);
+      m.rotation.y = Math.atan2(sg.nx, sg.nz);
+      m.userData.sign = true;
+      near.add(m);
+      this.signMeshes.push(m);
+    }
+    u.near = near;
+    grp.add(near);
   }
 
   // ------------------------------------------------------------- strade e acqua
@@ -175,7 +229,8 @@ export class World {
     for (const r of d.roads) {
       if (r.tu) continue;
       const pts = r.i.map((i) => [N[i * 2], N[i * 2 + 1]]);
-      const c = colCache[r.t] || (colCache[r.t] = srgbToLinear(ROAD_COLOR[r.t] || '#666'));
+      const ck = roadColor(r);
+      const c = colCache[ck] || (colCache[ck] = srgbToLinear(ck));
       ribbon(pts, r.w || ROAD_WIDTH[r.t] || 3, c, ['path', 'footway', 'track', 'cycleway', 'steps', 'bridleway'].includes(r.t) ? 0.12 : 0.18, !!r.b, false);
     }
     const wc = [1, 1, 1];
@@ -378,6 +433,14 @@ export class World {
   buildLamps() {
     const d = this.data, N = d.roadNodes;
     const pts = [];
+    const real = (d.furniture || []).filter((f) => f.t === 'lamp');
+    const nearReal = (x, z) => real.some((f) => Math.abs(f.x - x) < 22 && Math.abs(f.z - z) < 22);
+    for (const f of real) {
+      // lampioni reali OSM: braccio verso la strada più vicina
+      const ni = this.nearestNodeRaw(f.x, f.z);
+      const a = ni >= 0 ? Math.atan2(N[ni * 2] - f.x, N[ni * 2 + 1] - f.z) : 0;
+      pts.push(f.x, f.z, a);
+    }
     const rnd = mulberry32(42);
     for (const r of d.roads) {
       if (!r.n || ['path', 'footway', 'track', 'cycleway', 'steps', 'service'].includes(r.t)) continue;
@@ -394,7 +457,7 @@ export class World {
           if (near && rnd() < 0.9) {
             const off = (ROAD_WIDTH[r.t] || 5) / 2 + 0.8;
             const lx = x + nx * off * side, lz = z + nz * off * side;
-            if (!this.buildingAt(lx, lz)) pts.push(lx, lz, Math.atan2(-nx * side, -nz * side));
+            if (!this.buildingAt(lx, lz) && !nearReal(lx, lz)) pts.push(lx, lz, Math.atan2(-nx * side, -nz * side));
             side = -side;
           }
           t += 32;
@@ -522,6 +585,18 @@ export class World {
     }
   }
 
+  nearestNodeRaw(x, z) {
+    const N = this.data.roadNodes;
+    let best = -1, bd = 60;
+    for (let i = 0; i < N.length; i += 2) {
+      const dx = N[i] - x, dz = N[i + 1] - z;
+      if (Math.abs(dx) > bd || Math.abs(dz) > bd) continue;
+      const d = Math.hypot(dx, dz);
+      if (d < bd) { bd = d; best = i / 2; }
+    }
+    return best;
+  }
+
   nearestNode(x, z, maxD = 200) {
     const N = this.data.roadNodes;
     const gx = Math.floor(x / 40), gz = Math.floor(z / 40);
@@ -561,20 +636,29 @@ export class World {
     return null;
   }
   // superficie più alta sotto (x,z): tetto o terreno
-  surfaceAt(x, z) {
+  surfaceAt(x, z, y = 1e6) {
     const g = this.terrain.heightAt(x, z);
-    const b = this.buildingAt(x, z);
-    if (b) {
-      const ry = roofY(b, x, z);
-      if (ry > g) return { y: ry, b, ground: g };
+    if (this.col) {
+      const s = this.col.groundAt(x, z, y, 0.45);
+      return { y: s.y, b: s.kind === 'roof' ? s.ref : null, ground: g, kind: s.kind, ref: s.ref };
     }
+    const b = this.buildingAt(x, z);
+    if (b) { const ry = roofY(b, x, z); if (ry > g) return { y: ry, b, ground: g }; }
     return { y: g, b: null, ground: g };
   }
   roofY(rec, x, z) { return roofY(rec, x, z); }
+  roofYRaw(rec, x, z) { return roofYRaw(rec, x, z); }
+  insideRoof(rec, x, z) { return insideRoof(rec, x, z); }
   nearestEdge(rec, x, z) { return nearestEdge(rec, x, z); }
 
   // linea di vista libera tra due punti?
   lineOfSight(a, b) {
+    if (this.col) {
+      // ignora l'ultimo tratto: il bersaglio stesso (capitello, palo…) non deve coprire sé stesso
+      const d = a.distanceTo(b);
+      const end = b.clone().lerp(a, Math.min(0.5, 1.2 / Math.max(d, 0.01)));
+      return this.col.raycast(a, end, 0.5) > 0.98;
+    }
     const d = a.distanceTo(b);
     const n = Math.min(60, Math.ceil(d / 1.5));
     for (let i = 1; i < n; i++) {
@@ -594,9 +678,19 @@ export class World {
     const px = pos.x, pz = pos.z;
     const vd = this.viewDist;
     const alt = Math.max(0, pos.y - this.terrain.heightAt(px, pz));
+    let built = 0;
     for (const g of this.bChunks.values()) {
-      const d = Math.hypot(g.userData.c[0] - px, g.userData.c[1] - pz);
+      const u = g.userData;
+      const d = Math.max(0, Math.hypot(u.c[0] - px, u.c[1] - pz) - CHUNK * 0.7);
       g.visible = d < vd + 200;
+      const wantNear = d < this.detailDist;
+      if (wantNear && !u.near && built < (this.fastBuild ? 99 : 1)) { this.buildDetailChunk(g); built++; }
+      if (u.near) {
+        u.near.visible = wantNear || (d < this.detailDist + 80 && u.near.visible);
+        u.far.visible = !u.near.visible;
+        // libera la memoria dei chunk molto lontani
+        if (d > this.detailDist * 2.5) { this.disposeNear(g); }
+      } else u.far.visible = true;
     }
     const roadD = Math.min(vd, 1300 + alt * 2);
     for (const m of this.rChunks.values()) {
@@ -624,7 +718,20 @@ export class World {
     }
   }
 
+  disposeNear(g) {
+    const u = g.userData;
+    if (!u.near) return;
+    u.near.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.userData.sign) { o.material.map.dispose(); o.material.dispose(); this.signMeshes = this.signMeshes.filter((m) => m !== o); }
+    });
+    g.remove(u.near);
+    u.near = null;
+    u.far.visible = true;
+  }
+
   setNight(f) {
+    for (const m of this.signMeshes) m.material.emissiveIntensity = f * 0.6;
     this.wallMat.emissiveIntensity = f * 0.9;
     this.lampHeadMat.emissiveIntensity = f * 1.5;
     this.glowMat.opacity = f * 0.9;

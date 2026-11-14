@@ -69,6 +69,7 @@
           <tr><td>M</td><td>Mappa del comune</td></tr>
           <tr><td>T (tieni premuto)</td><td>Accelera il tempo</td></tr>
           <tr><td>Esc / P</td><td>Pausa</td></tr>
+          <tr><td>F3</td><td>Mostra FPS e statistiche</td></tr>
         </table>
       </details>
       <p class="credits">Mappa: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL) · Altimetria: Terrarium / AWS Open Data · Gli abitanti e i dialoghi sono inventati.</p>
@@ -85,6 +86,7 @@
         <span class="icon">👁</span><div class="track"><div class="fill" id="coverFill"></div></div><span id="coverText">0%</span>
       </div>
       <div id="clock">08:00 · Giorno 1</div>
+      <div id="weather"></div>
       <div id="location">Carbonara</div>
       <div id="altitude"></div>
     </div>
@@ -101,11 +103,19 @@
     <div id="subtitles"></div>
     <div id="toasts"></div>
     <div id="photoOverlay" class="hidden">
+      <div class="vignette"></div><div class="scan"></div>
       <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
-      <div class="cross"></div>
-      <div id="photoInfo">FOTOCAMERA SPIA · rotella = zoom · clic/Invio = scatta · Q = esci</div>
+      <div class="ticks h"></div><div class="ticks v"></div>
+      <div class="cross" id="photoCross"><span id="photoLock">CERCA</span></div>
+      <div id="photoRec">● REC</div>
+      <div id="photoZoom">×1.0</div>
+      <div id="photoDist">— m</div>
+      <div id="photoMeta"></div>
+      <div id="photoInfo">FOTOCAMERA SPIA P-77 · rotella = zoom · clic/Invio = scatta · Q = esci</div>
       <div id="photoTarget"></div>
     </div>
+    <div id="polaroidLayer"></div>
+    <div id="album" title="Album delle foto">📷 <span id="albumCount">0</span></div>
     <div id="flash"></div>
     <button id="btnPause" class="hudbtn" title="Pausa">⏸</button>
   </div>
@@ -146,6 +156,14 @@
       <button id="btnResume" class="primary">▶ Riprendi</button>
       <button id="btnGallery">📷 Foto scattate</button>
       <button id="btnMissionList">📜 Missioni</button>
+      <button id="btnLab">🧪 Laboratorio Illuminati</button>
+      <button id="btnAch">🏆 Obiettivi e record</button>
+      <div class="row">
+        <label>Distanza visiva
+          <select id="optView"><option value="0.7">Corta</option><option value="1" selected>Normale</option><option value="1.4">Lunga</option></select>
+        </label>
+        <label><input type="checkbox" id="optShadows" checked> Ombre</label>
+      </div>
       <div class="row">
         <label>Qualità
           <select id="quality2">
@@ -159,6 +177,8 @@
       <button id="btnReset" class="danger">Cancella salvataggio</button>
       <div id="gallery" class="hidden"></div>
       <div id="missionList" class="hidden"></div>
+      <div id="lab" class="hidden"></div>
+      <div id="achList" class="hidden"></div>
     </div>
   </div>
 

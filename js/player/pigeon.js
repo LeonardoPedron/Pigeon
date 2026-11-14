@@ -83,6 +83,7 @@ export function buildPigeonModel() {
 export class Pigeon {
   constructor(world, scene) {
     this.world = world;
+    this.col = world.col;
     this.model = buildPigeonModel();
     scene.add(this.model);
     this.pos = new THREE.Vector3();
@@ -90,135 +91,150 @@ export class Pigeon {
     this.heading = 0;
     this.mode = 'ground';
     this.battery = 100;
+    this.maxBattery = 100;
+    this.speedMul = 1;
     this.phase = 0;
     this.spread = 0;
     this.flapT = 0;
-    this.headBob = 0;
     this.onBuilding = null;
+    this.support = null;
     this.stats = { flown: 0, walked: 0 };
     this.events = [];
     this.knockT = 0;
-    this.lowWarned = 0;
+    this.R = 0.13; // raggio di collisione (piccione reale: 32 cm)
+    this.H = 0.3;
+    // ombra a disco (aiuta a capire quota e scala)
+    const sh = new THREE.Mesh(new THREE.CircleGeometry(0.16, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false }));
+    sh.renderOrder = 2;
+    scene.add(sh);
+    this.shadow = sh;
   }
 
   place(x, z, y) {
-    const s = this.world.surfaceAt(x, z);
-    this.pos.set(x, y ?? s.y, z);
-    if (this.pos.y <= s.y + 0.01) { this.pos.y = s.y; this.mode = 'ground'; this.onBuilding = s.b; }
-    else this.mode = 'air';
+    const g = this.col.groundAt(x, z, y ?? 1e6, 0.45);
+    this.pos.set(x, y ?? g.y, z);
     this.vel.set(0, 0, 0);
+    if (this.pos.y <= g.y + 0.01) { this.pos.y = g.y; this.mode = 'ground'; this.setSupport(g); }
+    else { this.mode = 'air'; this.support = null; this.onBuilding = null; }
+    this.col.ensureTrees(x, z);
+  }
+
+  setSupport(g) {
+    this.support = g;
+    const b = g.kind === 'roof' ? g.ref : null;
+    if (b !== this.onBuilding || (g.kind !== this.lastKind)) {
+      this.onBuilding = b;
+      this.lastKind = g.kind;
+      this.emit('land', { building: b, kind: g.kind, ref: g.ref });
+    }
+    this.supportPos = g.ref && (g.kind === 'car' || g.kind === 'head') ? [g.ref.x, g.ref.y, g.ref.z, g.ref.yaw || 0] : null;
   }
 
   emit(type, data) { this.events.push({ type, ...data }); }
 
   update(dt, input, camYaw, frozen) {
-    const w = this.world;
+    const col = this.col;
+    col.ensureTrees(this.pos.x, this.pos.z);
     const a = frozen ? { x: 0, y: 0 } : input.axes();
     const fx = Math.sin(camYaw), fz = Math.cos(camYaw);
     const rx = -Math.cos(camYaw), rz = Math.sin(camYaw);
-    let wx = fx * a.y + rx * a.x, wz = fz * a.y + rz * a.x;
+    const wx = fx * a.y + rx * a.x, wz = fz * a.y + rz * a.x;
     const moving = Math.hypot(wx, wz) > 0.05;
     const boost = input.boost && this.battery > 0;
-    const old = this.pos.clone();
     if (this.knockT > 0) this.knockT -= dt;
-
+    // trasportato da auto o persone in movimento
+    if (this.mode === 'ground' && this.supportPos && this.support?.ref) {
+      const r = this.support.ref, sp = this.supportPos;
+      const dyaw = (r.yaw || 0) - sp[3];
+      const ox = this.pos.x - sp[0], oz = this.pos.z - sp[2];
+      const c = Math.cos(dyaw), s = Math.sin(dyaw);
+      this.pos.x = r.x + ox * c + oz * s;
+      this.pos.z = r.z - ox * s + oz * c;
+      this.pos.y += r.y - sp[1];
+      this.heading += dyaw;
+      this.supportPos = [r.x, r.y, r.z, r.yaw || 0];
+    }
     if (this.mode === 'ground') {
-      const sp = boost ? 3.4 : 1.5;
+      const sp = (boost ? 3.2 : 1.3) * this.speedMul;
       const k = 1 - Math.exp(-10 * dt);
-      if (this.knockT <= 0) {
-        this.vel.x += (wx * sp - this.vel.x) * k;
-        this.vel.z += (wz * sp - this.vel.z) * k;
-      }
-      let nx = this.pos.x + this.vel.x * dt, nz = this.pos.z + this.vel.z * dt;
-      let s = w.surfaceAt(nx, nz);
-      if (s.y - this.pos.y > 0.35) {
-        // muro: prova a scivolare lungo un asse
-        const sx = w.surfaceAt(nx, this.pos.z), sz = w.surfaceAt(this.pos.x, nz);
-        if (sx.y - this.pos.y <= 0.35) { nz = this.pos.z; s = sx; this.vel.z = 0; }
-        else if (sz.y - this.pos.y <= 0.35) { nx = this.pos.x; s = sz; this.vel.x = 0; }
-        else { nx = this.pos.x; nz = this.pos.z; s = w.surfaceAt(nx, nz); this.vel.x = this.vel.z = 0; }
-      }
-      this.pos.x = nx; this.pos.z = nz;
-      if (s.y < this.pos.y - 0.5) {
-        // bordo del tetto: si cade/plana
-        this.mode = 'air';
-        this.vel.y = 0;
-      } else {
-        this.pos.y = s.y;
-        if (s.b !== this.onBuilding) {
-          this.onBuilding = s.b;
-          if (s.b) this.emit('land', { building: s.b });
-        }
-      }
-      const hs = Math.hypot(this.vel.x, this.vel.z);
-      this.stats.walked += hs * dt;
-      if (hs > 0.2) this.heading = turn(this.heading, Math.atan2(this.vel.x, this.vel.z), dt * 10);
-      this.phase += hs * dt * 9;
-      this.spread += (0 - this.spread) * Math.min(1, dt * 8);
+      if (this.knockT <= 0) { this.vel.x += (wx * sp - this.vel.x) * k; this.vel.z += (wz * sp - this.vel.z) * k; }
+      this.vel.y = 0;
       if (!frozen && input.fly) {
-        if (this.battery > 0.5) {
-          this.mode = 'air';
-          this.vel.y = 3.8;
-          this.onBuilding = null;
-          this.emit('takeoff', {});
-        } else if (!this.lowFlyMsg || performance.now() - this.lowFlyMsg > 3000) {
-          this.lowFlyMsg = performance.now();
-          this.emit('nobattery', {});
-        }
+        if (this.battery > 0.5) { this.mode = 'air'; this.vel.y = 3.8; this.support = null; this.onBuilding = null; this.lastKind = null; this.emit('takeoff', {}); }
+        else if (!this.lowFlyMsg || performance.now() - this.lowFlyMsg > 3000) { this.lowFlyMsg = performance.now(); this.emit('nobattery', {}); }
       }
-      this.drain(dt, hs > 0.2 ? 0.05 : 0.03);
     } else {
       const dead = this.battery <= 0;
-      const sp = dead ? 5 : boost ? 26 : 13;
+      const sp = (dead ? 5 : boost ? 26 : 13) * this.speedMul;
       const k = 1 - Math.exp(-(moving ? 1.6 : 1.0) * dt);
-      if (this.knockT <= 0) {
-        this.vel.x += (wx * sp - this.vel.x) * k;
-        this.vel.z += (wz * sp - this.vel.z) * k;
-      }
+      if (this.knockT <= 0) { this.vel.x += (wx * sp - this.vel.x) * k; this.vel.z += (wz * sp - this.vel.z) * k; }
       let ty = -1.3;
       if (!frozen && input.fly && !dead) ty = boost ? 8 : 5.5;
       if (!frozen && input.descend) ty = -10;
       if (dead) ty = input.descend ? -10 : -4.5;
       this.vel.y += (ty - this.vel.y) * (1 - Math.exp(-3 * dt));
+    }
+    // integrazione a sotto-passi con collisioni
+    const T = this.world.terrain;
+    const dist = Math.hypot(this.vel.x, this.vel.y, this.vel.z) * dt;
+    const n = Math.min(16, Math.max(1, Math.ceil(dist / 0.1)));
+    const h = dt / n;
+    const p = this.pos;
+    const x0 = p.x, z0 = p.z;
+    for (let i = 0; i < n; i++) {
+      p.x += this.vel.x * h; p.z += this.vel.z * h;
+      p.x = Math.max(T.x0 + 60, Math.min(T.x1 - 60, p.x));
+      p.z = Math.max(T.z0 + 60, Math.min(T.z1 - 60, p.z));
+      const hit = col.resolve(p, this.R, this.H);
+      if (hit) {
+        const vn = this.vel.x * hit.nx + this.vel.z * hit.nz;
+        if (vn < 0) { this.vel.x -= vn * hit.nx; this.vel.z -= vn * hit.nz; }
+        if (this.mode === 'air' && -vn > 6) this.emit('bump', { speed: -vn, kind: hit.kind });
+      }
+      if (this.mode === 'ground') {
+        const g = col.groundAt(p.x, p.z, p.y, 0.45);
+        if (g.y < p.y - 0.6) { this.mode = 'air'; this.vel.y = 0; this.support = null; this.onBuilding = null; this.lastKind = null; }
+        else { p.y = g.y; if (g.ref !== this.support?.ref || g.kind !== this.support?.kind) this.setSupport(g); }
+      } else {
+        const prevY = p.y;
+        p.y += this.vel.y * h;
+        const ceil = col.ceilingAt(p.x, p.z, prevY);
+        if (p.y + this.H > ceil) { p.y = ceil - this.H; this.vel.y = Math.min(0, this.vel.y); }
+        const lim = T.heightAt(p.x, p.z) + 700;
+        if (p.y > lim) { p.y = lim; this.vel.y = Math.min(0, this.vel.y); }
+        const g = col.groundAt(p.x, p.z, prevY, 0.05);
+        if (p.y <= g.y && this.vel.y <= 0.5) {
+          p.y = g.y; this.mode = 'ground'; this.vel.y = 0;
+          this.lastKind = null;
+          this.setSupport(g);
+        } else if (p.y < g.y) p.y = g.y;
+      }
+    }
+    const hs = Math.hypot(p.x - x0, p.z - z0);
+    if (this.mode === 'ground') {
+      this.stats.walked += hs;
+      const v = Math.hypot(this.vel.x, this.vel.z);
+      if (v > 0.2) this.heading = turn(this.heading, Math.atan2(this.vel.x, this.vel.z), dt * 10);
+      this.phase += v * dt * 9;
+      this.spread += (0 - this.spread) * Math.min(1, dt * 8);
+      this.drain(dt, v > 0.2 ? 0.05 : 0.03);
+    } else {
+      this.stats.flown += hs;
       const climbing = this.vel.y > 1;
       this.flapT += dt * (climbing ? 14 : moving ? 9 : 11);
       this.spread += (1 - this.spread) * Math.min(1, dt * 8);
-      let nx = this.pos.x + this.vel.x * dt, ny = this.pos.y + this.vel.y * dt, nz = this.pos.z + this.vel.z * dt;
-      // limiti del mondo
-      const T = w.terrain;
-      nx = Math.max(T.x0 + 60, Math.min(T.x1 - 60, nx));
-      nz = Math.max(T.z0 + 60, Math.min(T.z1 - 60, nz));
-      const ceil = T.heightAt(nx, nz) + 700;
-      if (ny > ceil) { ny = ceil; this.vel.y = Math.min(0, this.vel.y); }
-      const s = w.surfaceAt(nx, nz);
-      if (ny <= s.y) {
-        const was = w.surfaceAt(old.x, old.z);
-        if (old.y >= s.y - 0.4 || !s.b || was.b === s.b) {
-          // atterraggio (su tetto o terreno)
-          ny = s.y;
-          this.mode = 'ground';
-          this.vel.y = 0;
-          this.onBuilding = s.b;
-          this.emit('land', { building: s.b });
-        } else {
-          // colpito un muro di lato: respinto
-          nx = old.x; nz = old.z;
-          const e = w.nearestEdge(s.b, old.x, old.z);
-          if (e) {
-            const vn = this.vel.x * e.nx + this.vel.z * e.nz;
-            if (vn < 0) { this.vel.x -= vn * e.nx * 1.3; this.vel.z -= vn * e.nz * 1.3; }
-          } else { this.vel.x *= -0.3; this.vel.z *= -0.3; }
-          const s2 = w.surfaceAt(nx, nz);
-          if (ny < s2.y) ny = s2.y;
-        }
-      }
-      this.stats.flown += Math.hypot(nx - this.pos.x, nz - this.pos.z);
-      this.pos.set(nx, ny, nz);
-      const hs = Math.hypot(this.vel.x, this.vel.z);
-      if (hs > 0.6) this.heading = turn(this.heading, Math.atan2(this.vel.x, this.vel.z), dt * 4);
+      const v = Math.hypot(this.vel.x, this.vel.z);
+      if (v > 0.6) this.heading = turn(this.heading, Math.atan2(this.vel.x, this.vel.z), dt * 4);
       else if (moving) this.heading = turn(this.heading, Math.atan2(wx, wz), dt * 4);
       this.drain(dt, 0.2 + (boost ? 0.45 : 0) + (climbing ? 0.08 : 0));
     }
+    // ombra
+    const gs = col.groundAt(p.x, p.z, p.y + 0.01, 0.01);
+    this.shadow.position.set(p.x, gs.y + 0.02, p.z);
+    const hgt = p.y - gs.y;
+    this.shadow.visible = hgt < 40;
+    this.shadow.material.opacity = Math.max(0.05, 0.35 - hgt * 0.008);
+    this.shadow.scale.setScalar(1 + hgt * 0.02);
     this.animate(dt);
   }
 
@@ -229,13 +245,14 @@ export class Pigeon {
     if (before > 0 && this.battery <= 0) this.emit('empty', {});
   }
 
-  knock(dx, dz, power) {
+  knock(dx, dz, power, loss = 8) {
     this.vel.x = dx * power;
     this.vel.z = dz * power;
     this.vel.y = 3;
     this.mode = 'air';
+    this.support = null;
     this.knockT = 0.6;
-    this.battery = Math.max(0, this.battery - 8);
+    this.battery = Math.max(0, this.battery - loss);
   }
 
   animate(dt) {
@@ -281,34 +298,40 @@ export class SpyCamera {
   constructor(camera, world) {
     this.cam = camera;
     this.world = world;
+    this.col = world.col;
     this.yaw = 0;
-    this.pitch = 0.25;
-    this.dist = 1.5;
+    this.pitch = 0.2;
+    this.dist = 1.0;
     this.photo = false;
     this.zoom = 1;
     this.lastMouse = 0;
-    this.pos = new THREE.Vector3();
+    this.userDist = 1;
+    this.cur = new THREE.Vector3();
+    this.shake = 0;
   }
   update(dt, input, pigeon) {
     const sens = input.locked ? 0.0024 : 0.004;
     if (input.mouseDX || input.mouseDY) this.lastMouse = performance.now();
     this.yaw -= input.mouseDX * sens;
-    this.pitch = THREE.MathUtils.clamp(this.pitch + input.mouseDY * sens, -1.2, 1.35);
+    this.pitch = THREE.MathUtils.clamp(this.pitch + input.mouseDY * sens, -0.9, 1.35);
     if (this.photo) {
-      this.zoom = THREE.MathUtils.clamp(this.zoom * (input.wheel > 0 ? 0.85 : input.wheel < 0 ? 1.18 : 1), 1, 8);
-      const head = pigeon.pos.clone().add(new THREE.Vector3(Math.sin(pigeon.heading) * 0.12, 0.27, Math.cos(pigeon.heading) * 0.12));
+      this.zoom = THREE.MathUtils.clamp(this.zoom * (input.wheel > 0 ? 0.85 : input.wheel < 0 ? 1.18 : 1), 1, this.maxZoom || 8);
+      const head = pigeon.pos.clone().add(new THREE.Vector3(Math.sin(pigeon.heading) * 0.1, 0.24, Math.cos(pigeon.heading) * 0.1));
+      // leggero tremolio della mano (ala)
+      const t = performance.now() / 1000;
+      const j = 0.0025 * this.zoom;
+      const d = new THREE.Vector3(Math.sin(this.yaw + Math.sin(t * 1.7) * j) * Math.cos(this.pitch), -Math.sin(this.pitch + Math.sin(t * 2.3) * j), Math.cos(this.yaw + Math.sin(t * 1.7) * j) * Math.cos(this.pitch));
       this.cam.position.copy(head);
-      const d = new THREE.Vector3(Math.sin(this.yaw) * Math.cos(this.pitch), -Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch));
       this.cam.lookAt(head.clone().add(d));
-      const fov = 60 / this.zoom;
+      const fov = 70 / this.zoom;
       if (Math.abs(this.cam.fov - fov) > 0.01) { this.cam.fov = fov; this.cam.updateProjectionMatrix(); }
       pigeon.model.visible = false;
+      this.cur.copy(this.cam.position);
       return;
     }
     pigeon.model.visible = true;
-    if (this.cam.fov !== 60) { this.cam.fov = 60; this.cam.updateProjectionMatrix(); }
+    if (this.cam.fov !== 70) { this.cam.fov = 70; this.cam.updateProjectionMatrix(); }
     const air = pigeon.mode === 'air';
-    // in volo, se il giocatore non tocca la visuale, la camera si rimette dietro al piccione
     const hs = Math.hypot(pigeon.vel.x, pigeon.vel.z);
     if (air && hs > 3 && performance.now() - this.lastMouse > 1500) {
       let d = pigeon.heading - this.yaw;
@@ -316,25 +339,26 @@ export class SpyCamera {
       while (d < -Math.PI) d += Math.PI * 2;
       this.yaw += d * Math.min(1, dt * 1.2);
     }
-    if (input.wheel) this.userDist = THREE.MathUtils.clamp((this.userDist || 1) * (input.wheel > 0 ? 1.15 : 0.87), 0.6, 6);
-    const want = (air ? 2.6 + Math.min(hs, 26) * 0.09 : 1.35) * (this.userDist || 1);
+    if (input.wheel) this.userDist = THREE.MathUtils.clamp(this.userDist * (input.wheel > 0 ? 1.15 : 0.87), 0.5, 8);
+    // occhio di piccione: a terra vicino e basso, in volo più distante
+    const want = (air ? 3.2 + Math.min(hs, 26) * 0.07 : 1.55) * this.userDist;
     this.dist += (want - this.dist) * Math.min(1, dt * 3);
     const target = pigeon.pos.clone();
-    target.y += 0.22;
-    const dir = new THREE.Vector3(-Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));
-    // accorcia se ostruita
-    let dd = this.dist;
-    const p = new THREE.Vector3();
-    for (let i = 1; i <= 10; i++) {
-      const t = (this.dist * i) / 10;
-      p.copy(target).addScaledVector(dir, t);
-      const s = this.world.surfaceAt(p.x, p.z);
-      if (p.y < s.y + 0.15) { dd = Math.max(0.35, t - this.dist / 10); break; }
-    }
-    p.copy(target).addScaledVector(dir, dd);
-    const s = this.world.surfaceAt(p.x, p.z);
-    if (p.y < s.y + 0.15) p.y = s.y + 0.15;
-    this.cam.position.copy(p);
+    target.y += air ? 0.15 : 0.2;
+    const pitch = air ? this.pitch + 0.12 : this.pitch;
+    const dir = new THREE.Vector3(-Math.sin(this.yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(this.yaw) * Math.cos(pitch));
+    const desired = target.clone().addScaledVector(dir, this.dist);
+    // raycast reale contro muri, tetti, tettoie, pali e terreno
+    const f = this.col.raycast(target, desired, 0.08);
+    const dd = Math.max(0.25, this.dist * f - 0.12);
+    const p = target.clone().addScaledVector(dir, dd);
+    const gy = this.world.terrain.heightAt(p.x, p.z);
+    if (p.y < gy + 0.08) p.y = gy + 0.08;
+    // avvicinamento immediato, allontanamento morbido (niente scatti dentro i muri)
+    const curD = this.cur.distanceTo(target);
+    if (dd < curD || this.cur.lengthSq() === 0) this.cur.copy(p);
+    else this.cur.lerp(p, Math.min(1, dt * 6));
+    this.cam.position.copy(this.cur);
     this.cam.lookAt(target);
   }
 }

@@ -164,7 +164,7 @@ function addBuilding(t, outer, holes, id) {
     else if (kind === 'church' || kind === 'chapel' || kind === 'barn' || kind === 'garage' || kind === 'shed') roof = 'gabled';
     else roof = a > 900 ? 'flat' : (id % 3 === 0 ? 'gabled' : 'hipped');
   }
-  const b = { p: pts, h: r1(h), k: kind, r: roof[0] };
+  const b = { p: pts, h: r1(h), k: kind, r: roof[0], _t: t, _a: a, _id: id };
   if (holes && holes.length) b.hl = holes.map(ringXZ).filter((x) => x.length >= 6);
   if (t.name) b.n = t.name;
   if (t['addr:housenumber']) b.a = [t['addr:street'] || '', t['addr:housenumber']];
@@ -188,6 +188,134 @@ for (const r of rels.values()) {
   for (const o of outers) addBuilding(t, o, inners, +r.id);
 }
 console.log('buildings', buildings.length);
+
+// ---------------------------------------------------------------- DBT/CTRN Regione del Veneto: tipologia e uso ufficiali
+// edi_ty: 01 edificio, 03 rudere, 13/05 baracca o tettoia. edi_uso: 01 residenziale, 0102 autorimessa, 08 industriale,
+// 09 agricolo, 05 culto, 0303 istruzione, 02/03 pubblico, 10 sport, 07 commerciale (codici verificati incrociandoli con OSM).
+const ctrnFile = path.join(RAW, 'ctrn/edifici.json');
+const ctrn = fs.existsSync(ctrnFile) ? JSON.parse(fs.readFileSync(ctrnFile, 'utf8')) : [];
+const bGrid = new Map();
+const gkey = (x, z) => Math.floor(x / 40) + ',' + Math.floor(z / 40);
+buildings.forEach((b, i) => { const [x, z] = centroid(b.p); b._c = [x, z]; const k = gkey(x, z); if (!bGrid.has(k)) bGrid.set(k, []); bGrid.get(k).push(i); });
+const nearB = (x, z) => { const out = []; const gx = Math.floor(x / 40), gz = Math.floor(z / 40); for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (const i of bGrid.get(gx + dx + ',' + (gz + dz)) || []) out.push(i); return out; };
+let ctMatched = 0, ctAdded = 0;
+const extra = [];
+for (const f of ctrn) {
+  for (const poly of f.g) {
+    const ring = poly.map((c) => [c[1], c[0], null]);
+    const flat = ringXZ(ring);
+    if (flat.length < 6) continue;
+    const [cx, cz] = centroid(flat);
+    let hit = -1;
+    for (const i of nearB(cx, cz)) {
+      const b = buildings[i];
+      if (pointInPoly(cx, cz, b.p) || pointInPoly(b._c[0], b._c[1], flat)) { hit = i; break; }
+    }
+    if (hit >= 0) { if (!buildings[hit].ct) { buildings[hit].ct = { t: f.t, u: f.u }; ctMatched++; } }
+    else if (inMargin(cx, cz) && Math.abs(area(flat)) > 6) extra.push({ ring, ct: { t: f.t, u: f.u } });
+  }
+}
+for (const e of extra) {
+  const n0 = buildings.length;
+  addBuilding({ building: 'yes' }, e.ring, null, 900000000 + n0);
+  if (buildings.length > n0) { buildings[n0].ct = e.ct; buildings[n0].src = 'ctrn'; ctAdded++; }
+}
+console.log('CTRN: abbinati', ctMatched, 'aggiunti (mancanti in OSM)', ctAdded);
+
+// densità edilizia (per distinguere centro paese e campagna)
+const dGrid = new Map();
+for (const b of buildings) { const [x, z] = b._c || centroid(b.p); b._c = [x, z]; const k = Math.floor(x / 60) + ',' + Math.floor(z / 60); dGrid.set(k, (dGrid.get(k) || 0) + 1); }
+const density = (x, z) => { let n = 0; const gx = Math.floor(x / 60), gz = Math.floor(z / 60); for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) n += dGrid.get(gx + dx + ',' + (gz + dz)) || 0; return n; };
+const hrand = (id, k) => { let h = Math.imul((id | 0) ^ (k * 0x9e3779b1), 2654435761); h ^= h >>> 15; h = Math.imul(h, 2246822519); h ^= h >>> 13; return ((h >>> 0) % 10000) / 10000; };
+const KIND_KEEP = new Set(['church', 'chapel', 'tower', 'greenhouse', 'school', 'public', 'castle', 'apartments', 'villa', 'industrial', 'commercial', 'garage', 'barn', 'farm', 'ruins', 'roof']);
+const LEV = {};
+for (const b of buildings) {
+  const t = b._t || {}, a = b._a || Math.abs(area(b.p)), c = b.ct, id = b._id || 0;
+  const r = (k) => hrand(id, k);
+  const osm = KIND_MAP[t.building];
+  let k = KIND_KEEP.has(osm) ? osm : null;
+  if (t.man_made === 'tower' || t.tower || t.building === 'bell_tower') k = 'tower';
+  if (t.man_made === 'silo' || t.building === 'silo') k = 'silo';
+  if (t.building === 'roof' || /tettoia|pensilina/.test(t.note || '')) k = k === 'roof' || !k ? 'canopy' : k;
+  if (k === 'roof') k = 'canopy';
+  if (k === 'industrial' && c?.u === '09') k = 'barn';
+  if (!k) {
+    const note = t.note || '';
+    if (c?.t === '03' || /rudere/.test(note)) k = 'ruins';
+    else if (c && (c.t === '13' || c.t === '05')) k = /baracca/.test(note) ? 'shed' : a > 45 && r(1) < 0.65 ? 'canopy' : 'shed';
+    else if (/baracca/.test(note) || osm === 'shed') k = a > 60 && /baracca/.test(note) === false ? 'canopy' : 'shed';
+    else if (c?.u === '0102' || osm === 'garage') k = 'garage';
+    else if (c?.u === '08') k = 'industrial';
+    else if (c?.u === '09') k = a > 220 ? 'barn' : 'farm';
+    else if (c?.u === '05' || t.amenity === 'place_of_worship') k = a > 150 ? 'church' : 'chapel';
+    else if (c?.u === '0303' || c?.u === '0301') k = 'school';
+    else if (c?.u === '02' || c?.u === '03') k = 'public';
+    else if (c?.u === '10' || c?.u === '1002') k = 'sport';
+    else if (c?.u === '07') k = 'commercial';
+    else if (a < 22) k = 'shed';
+    else if (a > 1500 && !c) k = 'industrial';
+    else {
+      const dens = density(b._c[0], b._c[1]);
+      if (a > 420 || (a > 260 && dens > 30)) k = 'apartments';
+      else if (a > 230) k = r(2) < 0.5 ? 'villa' : 'house';
+      else k = 'house';
+    }
+  }
+  if ((t.shop || t.amenity) && k === 'house') b.shopfront = 1;
+  // piani e altezze stimate in base al tipo (OSM non ha altezze per questo comune)
+  let lv = parseFloat(t['building:levels']) || 0, h = parseFloat(t.height) || 0;
+  const dens = density(b._c[0], b._c[1]);
+  switch (k) {
+    case 'house': lv = lv || (a < 70 && r(3) < 0.35 ? 1 : dens > 35 && r(3) < 0.25 ? 3 : 2); h = h || lv * 2.95 + 0.5; break;
+    case 'villa': lv = lv || (r(3) < 0.3 ? 3 : 2); h = h || lv * 3.3 + 0.8; break;
+    case 'apartments': lv = lv || (dens > 40 ? 4 + Math.floor(r(3) * 2) : 3 + Math.floor(r(3) * 2)); h = h || lv * 3 + 0.6; break;
+    case 'farm': lv = lv || 2; h = h || 6.8 + r(3); break;
+    case 'barn': lv = 1; h = h || 6 + r(3) * 2.5; break;
+    case 'industrial': lv = 1; h = h || 6.5 + r(3) * 4; break;
+    case 'commercial': lv = lv || 1 + Math.floor(r(3) * 2); h = h || lv * 3.8 + 0.5; break;
+    case 'garage': lv = 1; h = h || 2.6; break;
+    case 'shed': lv = 1; h = h || 2.2 + r(3) * 0.8; break;
+    case 'canopy': lv = 1; h = h || 3.2 + r(3) * 1.6; break;
+    case 'ruins': lv = 1; h = h || 2.5 + r(3) * 3; break;
+    case 'church': lv = 1; h = h || Math.max(9, Math.min(16, Math.sqrt(a) * 0.75)); break;
+    case 'chapel': lv = 1; h = h || 5.5; break;
+    case 'tower': lv = 1; h = h || Math.max(22, b.h || 0, 24 + r(3) * 8); break;
+    case 'school': lv = lv || 2; h = h || lv * 3.6 + 0.6; break;
+    case 'public': lv = lv || 2; h = h || lv * 3.5 + 0.8; break;
+    case 'sport': lv = 1; h = h || 7.5; break;
+    case 'silo': lv = 1; h = h || 12 + r(3) * 8; break;
+    case 'greenhouse': lv = 1; h = h || 3.2; break;
+    case 'castle': lv = lv || 3; h = h || 12; break;
+    default: lv = lv || 2; h = h || lv * 3;
+  }
+  let roof = t['roof:shape'] && ['flat', 'gabled', 'hipped', 'pyramidal'].includes(t['roof:shape']) ? t['roof:shape'][0] : null;
+  if (!roof) {
+    roof = {
+      house: r(4) < 0.62 ? 'h' : 'g', villa: 'h', apartments: r(4) < 0.2 ? 'f' : 'h', farm: r(4) < 0.5 ? 'g' : 'h', barn: 'g',
+      industrial: r(4) < 0.6 ? 'f' : 'g', commercial: r(4) < 0.5 ? 'f' : 'h', garage: r(4) < 0.5 ? 'f' : 'g', shed: r(4) < 0.4 ? 'f' : 'g',
+      canopy: r(4) < 0.4 ? 'f' : 'g', ruins: 'n', church: 'g', chapel: 'g', tower: 'p', school: r(4) < 0.5 ? 'f' : 'h', public: 'h',
+      sport: 'g', silo: 'd', greenhouse: 'g', castle: 'f',
+    }[k] || 'h';
+  }
+  b.k = k; b.h = r1(h); b.lv = lv; b.r = roof;
+  LEV[k] = (LEV[k] || 0) + 1;
+}
+console.log('tipi edificio', JSON.stringify(LEV));
+// insegne: POI (nodi) dentro un edificio
+for (const n of nodes.values()) {
+  if (!n.tag) continue;
+  const t = tagsOf(n);
+  const name = t.name;
+  const type = t.shop ? 'shop' : ['bar', 'cafe', 'restaurant', 'pharmacy', 'post_office', 'bank', 'pub', 'ice_cream', 'fast_food'].includes(t.amenity) ? t.amenity : null;
+  if (!name || !type) continue;
+  const x = px(+n.lon), z = pz(+n.lat);
+  for (const i of nearB(x, z)) {
+    const b = buildings[i];
+    if (b && pointInPoly(x, z, b.p)) { b.sign = name; b.signT = type; if (b.k === 'house' || b.k === 'apartments' || b.k === 'villa') b.shopfront = 1; break; }
+  }
+}
+for (const b of buildings) if (b.n && b.poi && !b.sign && !['place_of_worship'].includes(b.poi)) { b.sign = b.n; b.signT = b.poi; }
+for (const b of buildings) { delete b._t; delete b._a; delete b._id; delete b._c; }
 
 // ---------------------------------------------------------------- roads (nodi condivisi -> grafo)
 const ROAD_W = { motorway: 10, trunk: 8, primary: 7, secondary: 6.5, tertiary: 6, residential: 5, unclassified: 4.5, living_street: 4.5, service: 3.5, track: 3, pedestrian: 4, footway: 1.6, path: 1.4, cycleway: 2, steps: 1.6, bridleway: 1.6 };
@@ -218,6 +346,11 @@ for (const w of ways.values()) {
   if (t.tunnel && t.tunnel !== 'no') rd.tu = 1;
   if (t.oneway === 'yes') rd.o = 1;
   if (t.width && parseFloat(t.width)) rd.w = parseFloat(t.width);
+  else if (t.lanes && parseInt(t.lanes) >= 2 && ['primary', 'secondary', 'tertiary', 'unclassified', 'residential'].includes(t.highway)) rd.w = Math.max(ROAD_W[t.highway], parseInt(t.lanes) * 3);
+  if (t.lanes) rd.l = parseInt(t.lanes) || undefined;
+  if (t.surface) rd.s = t.surface;
+  if (t.footway === 'sidewalk') rd.sw = 1;
+  if (t.layer) rd.y = parseInt(t.layer) || undefined;
   roads.push(rd);
 }
 console.log('roads', roads.length, 'road nodes', roadNodes.length / 2);
@@ -284,6 +417,63 @@ for (const w of ways.values()) {
     }
   }
 }
+
+// ---------------------------------------------------------------- dettagli: recinzioni, muri, linee elettriche, arredo urbano
+const barriers = [];
+const power = { lines: [], supports: [] };
+const furniture = [];
+const pools = [];
+const supportSeen = new Set();
+for (const w of ways.values()) {
+  const t = tagsOf(w);
+  if (['fence', 'wall', 'retaining_wall', 'hedge', 'guard_rail', 'city_wall'].includes(t.barrier)) {
+    const flat = ringXZ(wayLatLon(w));
+    if (w.nd[0].ref === w.nd[w.nd.length - 1].ref && flat.length >= 4) flat.push(flat[0], flat[1]);
+    if (flat.length >= 4 && anyIn(flat)) barriers.push({ t: t.barrier === 'city_wall' ? 'wall' : t.barrier, p: flat, h: parseFloat(t.height) || undefined });
+  }
+  if (t.power === 'line' || t.power === 'minor_line') {
+    const ll = wayLatLon(w);
+    const flat = [];
+    for (const [la, lo] of ll) flat.push(r1(px(lo)), r1(pz(la)));
+    if (flat.length < 4 || !anyIn(flat)) continue;
+    const big = t.power === 'line';
+    power.lines.push({ p: flat, big: big ? 1 : 0, c: Math.min(6, parseInt(t.cables) || (big ? 3 : 3)) });
+    for (const [la, lo, id] of ll) {
+      if (supportSeen.has(id)) continue;
+      supportSeen.add(id);
+      const nt = nodes.get(id) ? tagsOf(nodes.get(id)) : {};
+      power.supports.push(r1(px(lo)), r1(pz(la)), nt.power === 'tower' || big ? 1 : 0);
+    }
+  }
+  if (t.leisure === 'swimming_pool' && w.nd[0].ref === w.nd[w.nd.length - 1].ref) {
+    const p = ringXZ(wayLatLon(w));
+    if (p.length >= 6 && anyIn(p)) pools.push(p);
+  }
+}
+const FURN = { street_lamp: 'lamp', crossing: 'crossing', stop: 'stop', give_way: 'giveway', bus_stop: 'bus', traffic_signals: 'signals' };
+for (const n of nodes.values()) {
+  if (!n.tag) continue;
+  const t = tagsOf(n);
+  const x = r1(px(+n.lon)), z = r1(pz(+n.lat));
+  if (!inMargin(x, z)) continue;
+  let f = FURN[t.highway] || null;
+  if (!f && t.historic === 'wayside_shrine') f = 'shrine';
+  if (!f && t.historic === 'wayside_cross') f = 'cross';
+  if (!f && t.amenity === 'bench') f = 'bench';
+  if (!f && (t.amenity === 'fountain' || t.amenity === 'drinking_water')) f = 'fountain';
+  if (!f && t.amenity === 'waste_basket') f = 'bin';
+  if (!f && t.leisure === 'picnic_table') f = 'picnic';
+  if (!f && t.barrier === 'gate') f = 'gate';
+  if (!f && t.leisure === 'playground') f = 'playground';
+  if (!f && t.amenity === 'post_box') f = 'postbox';
+  if (!f && t.amenity === 'recycling') f = 'recycling';
+  if (!f && t.man_made === 'mast') f = 'mast';
+  if (!f) continue;
+  const it = { t: f, x, z };
+  if (t.name && (f === 'bus' || f === 'shrine')) it.n = t.name;
+  furniture.push(it);
+}
+console.log('dettagli: barriere', barriers.length, 'linee elettriche', power.lines.length, 'sostegni', power.supports.length / 3, 'arredo', furniture.length, 'piscine', pools.length);
 
 // ---------------------------------------------------------------- POI & indirizzi
 const pois = [];
@@ -456,6 +646,10 @@ const world = {
   areas,
   waterways,
   trees,
+  barriers,
+  power,
+  furniture,
+  pools,
   pois,
   addresses,
   villages: villages.map((v) => ({ x: v.x, z: v.z, n: v.n, inside: inBoundary(v.x, v.z) })),

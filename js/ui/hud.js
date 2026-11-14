@@ -1,4 +1,5 @@
 // HUD: batteria, sospetto, orologio, posizione, missione, sottotitoli, notifiche, briefing.
+import { WEATHER_LABEL as WL } from '../systems/weather.js';
 const $ = (id) => document.getElementById(id);
 
 export class HUD {
@@ -30,8 +31,10 @@ export class HUD {
     this.t = 0.1;
     const g = this.g, p = g.pigeon;
     const b = p.battery;
-    this.el.battFill.style.width = b.toFixed(1) + '%';
-    this.el.battFill.style.background = b > 50 ? '#6cc56c' : b > 20 ? '#e9b04b' : '#e2513b';
+    const bp = (b / p.maxBattery) * 100;
+    this.el.battFill.style.width = bp.toFixed(1) + '%';
+    document.getElementById('weather').textContent = WL[g.weather?.state] || '';
+    this.el.battFill.style.background = bp > 50 ? '#6cc56c' : bp > 20 ? '#e9b04b' : '#e2513b';
     this.el.battText.textContent = Math.ceil(b) + '%';
     this.el.coverFill.style.width = g.suspicion.toFixed(0) + '%';
     this.el.coverText.textContent = Math.round(g.suspicion) + '%';
