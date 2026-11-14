@@ -105,6 +105,20 @@ check('reveal falso rifiutato', await B.evaluate(async () => {
   return !(await verifyReveal(p.commit, { role: 'vero', salt: 'x', round: 1 }));
 }));
 
+// server TURN: override da URL + credenziali Metered scaricate (risposta simulata)
+await ctx.route('https://prova.metered.live/**', (r) => r.fulfill({ contentType: 'application/json', body: JSON.stringify([
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  { urls: 'turn:global.relay.metered.ca:80', username: 'u1', credential: 'c1' },
+  { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'u1', credential: 'c1' },
+]) }));
+const turn = await B.evaluate(async () => {
+  const { turnServers } = await import('./js/net/ice.js');
+  sessionStorage.removeItem('piccioneSpia.turn.v1');
+  return turnServers({ meteredApp: 'prova', meteredApiKey: 'k', turn: [{ urls: 'turn:mio.example:3478', username: 'a', credential: 'b' }] });
+});
+check('server TURN: statici + Metered (senza STUN)', turn.length === 3 && turn.every((s) => [].concat(s.urls).every((u) => /^turns?:/.test(u))), JSON.stringify(turn.map((s) => s.urls)));
+check('server TURN: nessuna configurazione = lista vuota', (await B.evaluate(async () => (await (await import('./js/net/ice.js')).turnServers({ turn: [] })).length)) === 0);
+
 if (process.argv.includes('--shots')) {
   fs.mkdirSync(SHOTS, { recursive: true });
   await B.evaluate(() => { const g = __game; g.cam.yaw = Math.atan2(g.nest.x + 3 - g.pigeon.pos.x, g.nest.z + 1 - g.pigeon.pos.z); });
